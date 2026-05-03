@@ -17,7 +17,7 @@ import (
 func main() {
 	ddlPath := flag.String("ddl", "", "path to a Spanner GoogleSQL DDL file")
 	sql := flag.String("sql", "", "SQL query or expression to analyze")
-	mode := flag.String("mode", "analyze", "comma-separated modes: analyze, parse, unparse, resolved_ast")
+	mode := flag.String("mode", "spanner_type", "comma-separated modes: spanner_type, parse, analyze, unparse")
 	sqlMode := flag.String("sql-mode", "query", "how to interpret --sql: query or expression")
 	output := flag.String("output", "json", "output format: json or textproto")
 	productMode := flag.String("product-mode", "", "GoogleSQL product mode: internal or external")
@@ -84,7 +84,7 @@ func marshalProto(message anyProto, output string) ([]byte, error) {
 
 func runModes(analyzer *spanalyzer.Analyzer, modes []string, sqlMode, sql, output string) (string, error) {
 	if len(modes) == 0 {
-		modes = []string{"analyze"}
+		modes = []string{"spanner_type"}
 	}
 	sections := make([]modeResult, 0, len(modes))
 	for _, mode := range modes {
@@ -120,8 +120,8 @@ type modeResult struct {
 
 func runMode(analyzer *spanalyzer.Analyzer, mode, sqlMode, sql, output string) (string, error) {
 	switch mode {
-	case "analyze", "rowtype":
-		message, err := analysisProtoForSQLMode(analyzer, sqlMode, sql)
+	case "spanner_type", "rowtype":
+		message, err := spannerTypeProtoForSQLMode(analyzer, sqlMode, sql)
 		if err != nil {
 			return "", err
 		}
@@ -138,14 +138,14 @@ func runMode(analyzer *spanalyzer.Analyzer, mode, sqlMode, sql, output string) (
 			return "", err
 		}
 		return unparsed + "\n", nil
-	case "resolved_ast":
+	case "analyze", "resolved_ast":
 		return analyzer.ResolvedASTDebugString(sqlMode, sql)
 	default:
 		return "", fmt.Errorf("unsupported --mode %q", mode)
 	}
 }
 
-func analysisProtoForSQLMode(analyzer *spanalyzer.Analyzer, sqlMode, sql string) (anyProto, error) {
+func spannerTypeProtoForSQLMode(analyzer *spanalyzer.Analyzer, sqlMode, sql string) (anyProto, error) {
 	switch sqlMode {
 	case "query":
 		return analyzer.RowTypeForStatement(sql)

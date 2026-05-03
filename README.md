@@ -178,10 +178,12 @@ The CLI also exposes selected GoogleSQL analyzer options from
 format instead of JSON.
 
 `--mode` is inspired by GoogleSQL `execute_query` modes. The default
-`--mode=analyze` returns the Spanner row type. `--mode=parse` prints the parser
-AST, `--mode=unparse` prints parser AST converted back to SQL, and
-`--mode=resolved_ast` prints the resolved AST debug string. Modes can be
-comma-separated, for example `--mode=parse,resolved_ast`.
+`--mode=spanner_type` returns the Cloud Spanner row type for query mode, or a
+single Cloud Spanner type for expression mode. `--mode=parse` prints the parser
+AST, `--mode=analyze` prints the resolved AST debug string like GoogleSQL
+`execute_query` analyze mode, and `--mode=unparse` prints parser AST converted
+back to SQL. Modes can be comma-separated, for example
+`--mode=parse,analyze,spanner_type`.
 
 GoogleSQL is initialized with wazero compiler mode and an on-disk compilation
 cache. Set `SPANNER_ANALYZER_GOOGLESQL_CACHE_DIR` to override the cache
