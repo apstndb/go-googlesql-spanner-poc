@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Setup mise
+        uses: jdx/mise-action@v4.0.1
+        with:
+          cache: true
+          install: true
+          install_args: go
+
+      - name: Download modules
+        run: mise x -- go mod download
+
+      - name: Verify modules
+        run: mise x -- go mod verify
+
+      - name: Check go mod tidy
+        run: |
+          mise x -- go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Vet
+        run: mise x -- go vet ./...
+
+      - name: Test
+        run: mise x -- go test -race -shuffle=on ./...
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Setup mise
+        uses: jdx/mise-action@v4.0.1
+        with:
+          cache: true
+          install: true
+          install_args: go golangci-lint
+
+      - name: Run golangci-lint
+        run: mise x -- golangci-lint run --timeout=5m
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Setup mise
+        uses: jdx/mise-action@v4.0.1
+        with:
+          cache: true
+          install: true
+          install_args: go go:golang.org/x/vuln/cmd/govulncheck
+
+      - name: Run govulncheck
+        run: mise x -- govulncheck ./...

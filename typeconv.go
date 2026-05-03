@@ -7,10 +7,6 @@ import (
 	googlesql "github.com/goccy/go-googlesql"
 )
 
-func typeSpecToGoogleSQLType(tf *googlesql.TypeFactory, spec *TypeSpec) (googlesql.Googlesql_TypeNode, error) {
-	return typeSpecToGoogleSQLTypeWithProto(tf, spec, nil)
-}
-
 func typeSpecToGoogleSQLTypeWithProto(tf *googlesql.TypeFactory, spec *TypeSpec, catalog *Catalog) (googlesql.Googlesql_TypeNode, error) {
 	if spec == nil {
 		return nil, fmt.Errorf("nil type spec")
@@ -76,10 +72,6 @@ func typeSpecToGoogleSQLTypeWithProto(tf *googlesql.TypeFactory, spec *TypeSpec,
 	default:
 		return nil, fmt.Errorf("unsupported Spanner type code %s", spec.Code)
 	}
-}
-
-func googleSQLTypeToSpannerPB(t googlesql.Googlesql_TypeNode) (*spannerpb.Type, error) {
-	return SpannerTypeFromGoogleSQLType(t)
 }
 
 func SpannerTypeFromGoogleSQLType(t googlesql.Googlesql_TypeNode) (*spannerpb.Type, error) {
