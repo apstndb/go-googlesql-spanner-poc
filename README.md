@@ -67,7 +67,6 @@ parameters can be declared with repeatable `--positional-param TYPE`.
 
 ```sh
 go run ./cmd/spanner-analyzer \
-  --ddl schema.sql \
   --sql 'SELECT @id AS id' \
   --param id=INT64
 ```
@@ -120,8 +119,6 @@ single Spanner `Type` instead of a query result row type.
 
 ```sh
 go run ./cmd/spanner-analyzer \
-  --ddl testdata/order-proto-schema.sql \
-  --proto-descriptors-file testdata/protos/order_descriptors.pb \
   --sql-mode expression \
   --sql 'AI.SCORE(@prompt)' \
   --param 'prompt=STRING(MAX)'
@@ -137,8 +134,6 @@ Polymorphic functions resolve their return type from the argument type.
 
 ```sh
 go run ./cmd/spanner-analyzer \
-  --ddl testdata/order-proto-schema.sql \
-  --proto-descriptors-file testdata/protos/order_descriptors.pb \
   --sql-mode expression \
   --sql 'ARRAY_FIRST([1, 2, 3])'
 ```
@@ -151,8 +146,6 @@ code: INT64
 
 ```sh
 go run ./cmd/spanner-analyzer \
-  --ddl testdata/order-proto-schema.sql \
-  --proto-descriptors-file testdata/protos/order_descriptors.pb \
   --sql-mode expression \
   --sql 'ARRAY_FIRST(["a", "b"])'
 ```
@@ -169,8 +162,6 @@ materialized.
 
 ```sh
 go run ./cmd/spanner-analyzer \
-  --ddl testdata/order-proto-schema.sql \
-  --proto-descriptors-file testdata/protos/order_descriptors.pb \
   --sql 'SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, SPANNER_TYPE
          FROM INFORMATION_SCHEMA.COLUMNS'
 ```
