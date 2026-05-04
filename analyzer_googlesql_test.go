@@ -254,6 +254,31 @@ func TestAnalyzerFunctionCatalogDebugString(t *testing.T) {
 	}
 }
 
+func TestAnalyzerRowTypeForInformationSchema(t *testing.T) {
+	analyzer, err := NewAnalyzerFromDDL("schema.sql", "")
+	if err != nil {
+		t.Fatalf("NewAnalyzerFromDDL() error = %v", err)
+	}
+	rowType, err := analyzer.RowTypeForStatement(`
+SELECT
+  TABLE_NAME,
+  COLUMN_NAME,
+  ORDINAL_POSITION,
+  SPANNER_TYPE
+FROM INFORMATION_SCHEMA.COLUMNS
+`)
+	if err != nil {
+		t.Fatalf("RowTypeForStatement() error = %v", err)
+	}
+	if got, want := len(rowType.Fields), 4; got != want {
+		t.Fatalf("len(rowType.Fields) = %d, want %d", got, want)
+	}
+	assertField(t, rowType.Fields[0], "TABLE_NAME", spannerpb.TypeCode_STRING)
+	assertField(t, rowType.Fields[1], "COLUMN_NAME", spannerpb.TypeCode_STRING)
+	assertField(t, rowType.Fields[2], "ORDINAL_POSITION", spannerpb.TypeCode_INT64)
+	assertField(t, rowType.Fields[3], "SPANNER_TYPE", spannerpb.TypeCode_STRING)
+}
+
 func TestAnalyzerRowTypeForSpannerSearchFunctions(t *testing.T) {
 	const ddl = `
 CREATE TABLE Albums (

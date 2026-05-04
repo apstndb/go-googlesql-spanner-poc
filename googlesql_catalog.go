@@ -3,6 +3,7 @@ package spanalyzer
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	googlesql "github.com/goccy/go-googlesql"
 )
@@ -10,6 +11,7 @@ import (
 type GoogleSQLCatalog struct {
 	SpannerCatalog  *Catalog
 	SimpleCatalog   *googlesql.SimpleCatalog
+	simpleCatalogs  map[string]*googlesql.SimpleCatalog
 	AnalyzerOptions *googlesql.AnalyzerOptions
 	TypeFactory     *googlesql.TypeFactory
 }
@@ -29,6 +31,7 @@ func BuildGoogleSQLCatalogFromSpannerCatalog(schema *Catalog, options ...Analyze
 	if schema == nil {
 		return nil, fmt.Errorf("nil schema catalog")
 	}
+	schema.addInformationSchemaTables()
 	config := defaultAnalyzerConfig()
 	for _, option := range options {
 		option(&config)
@@ -47,6 +50,7 @@ func BuildGoogleSQLCatalogFromSpannerCatalog(schema *Catalog, options ...Analyze
 	out := &GoogleSQLCatalog{
 		SpannerCatalog:  schema,
 		SimpleCatalog:   simpleCatalog,
+		simpleCatalogs:  map[string]*googlesql.SimpleCatalog{"": simpleCatalog},
 		AnalyzerOptions: opts,
 		TypeFactory:     tf,
 	}
@@ -147,9 +151,18 @@ func (c *GoogleSQLCatalog) addTables() error {
 
 func (c *GoogleSQLCatalog) addTable(table *Table) error {
 	tableName := table.Name.String()
-	gsTable, err := googlesql.NewSimpleTable(tableName, 0)
+	parentCatalog, leafName, err := simpleCatalogForObjectName(c.SimpleCatalog, c.simpleCatalogs, table.Name)
 	if err != nil {
 		return err
+	}
+	gsTable, err := googlesql.NewSimpleTable(leafName, 0)
+	if err != nil {
+		return err
+	}
+	if tableName != leafName {
+		if err := gsTable.SetFullName(tableName); err != nil {
+			return err
+		}
 	}
 	if err := gsTable.SetAllowDuplicateColumnNames(true); err != nil {
 		return err
@@ -179,7 +192,7 @@ func (c *GoogleSQLCatalog) addTable(table *Table) error {
 			return err
 		}
 	}
-	if err := c.SimpleCatalog.AddTable(gsTable); err != nil {
+	if err := parentCatalog.AddTable(gsTable); err != nil {
 		return err
 	}
 	for _, synonym := range table.Synonyms {
@@ -188,6 +201,27 @@ func (c *GoogleSQLCatalog) addTable(table *Table) error {
 		}
 	}
 	return nil
+}
+
+func simpleCatalogForObjectName(root *googlesql.SimpleCatalog, catalogs map[string]*googlesql.SimpleCatalog, name ObjectName) (*googlesql.SimpleCatalog, string, error) {
+	if len(name.Parts) <= 1 {
+		return root, name.String(), nil
+	}
+	parent := root
+	for i, part := range name.Parts[:len(name.Parts)-1] {
+		key := strings.Join(name.Parts[:i+1], ".")
+		if catalog, ok := catalogs[key]; ok {
+			parent = catalog
+			continue
+		}
+		child, err := parent.MakeOwnedSimpleCatalog(part)
+		if err != nil {
+			return nil, "", err
+		}
+		catalogs[key] = child
+		parent = child
+	}
+	return parent, name.Parts[len(name.Parts)-1], nil
 }
 
 func (c *GoogleSQLCatalog) addViews() error {

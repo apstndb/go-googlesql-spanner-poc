@@ -144,6 +144,7 @@ func BuildSchemaCatalog(path, ddlSQL string) (*Catalog, error) {
 			return nil, err
 		}
 	}
+	catalog.addInformationSchemaTables()
 	return catalog, nil
 }
 

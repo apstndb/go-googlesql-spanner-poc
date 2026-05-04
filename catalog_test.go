@@ -1,6 +1,7 @@
 package spanalyzer
 
 import (
+	"strings"
 	"testing"
 
 	"cloud.google.com/go/spanner/apiv1/spannerpb"
@@ -134,12 +135,23 @@ DROP TABLE Albums;
 	if err != nil {
 		t.Fatalf("BuildSchemaCatalog() error = %v", err)
 	}
-	if len(catalog.Tables) != 0 {
-		t.Fatalf("tables = %#v, want empty", catalog.Tables)
+	if got := userTableCount(catalog); got != 0 {
+		t.Fatalf("user table count = %d, want 0; tables = %#v", got, catalog.Tables)
 	}
 	if len(catalog.Views) != 0 {
 		t.Fatalf("views = %#v, want empty", catalog.Views)
 	}
+}
+
+func userTableCount(catalog *Catalog) int {
+	count := 0
+	for name := range catalog.Tables {
+		if strings.HasPrefix(name, informationSchemaName+".") {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 func TestBuildSchemaCatalogCreateOrReplaceView(t *testing.T) {

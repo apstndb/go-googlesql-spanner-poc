@@ -182,6 +182,18 @@ Output:
 }
 ```
 
+Cloud Spanner `INFORMATION_SCHEMA` tables are registered as built-in catalog
+tables for analysis. They provide names and column types only; no row data is
+materialized.
+
+```sh
+go run ./cmd/spanner-analyzer \
+  --ddl testdata/order-proto-schema.sql \
+  --proto-descriptors-file testdata/protos/order_descriptors.pb \
+  --sql 'SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, SPANNER_TYPE
+         FROM INFORMATION_SCHEMA.COLUMNS'
+```
+
 The CLI also exposes selected GoogleSQL analyzer options from
 `execute_query_tool`, including `--product-mode`, `--strict-name-resolution`,
 `--fold-literal-cast`, `--prune-unused-columns`, and
