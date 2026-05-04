@@ -39,8 +39,8 @@ Output:
 to resolve types named by `CREATE PROTO BUNDLE` or `ALTER PROTO BUNDLE`. The
 flag is repeatable.
 
-`--ddl` is optional. Queries that only use built-in functions, parameters, or
-`INFORMATION_SCHEMA` can be analyzed without a schema file:
+`--ddl` is optional. Queries that only use built-in functions, parameters,
+`INFORMATION_SCHEMA`, or `SPANNER_SYS` can be analyzed without a schema file:
 
 ```sh
 go run ./cmd/spanner-analyzer \
@@ -200,6 +200,26 @@ go run ./cmd/spanner-analyzer \
   --proto-descriptors-file testdata/protos/order_descriptors.pb \
   --sql 'SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, SPANNER_TYPE
          FROM INFORMATION_SCHEMA.COLUMNS'
+```
+
+Cloud Spanner `SPANNER_SYS` introspection tables are also registered as built-in
+catalog tables. They are useful for type-checking monitoring queries and
+statistics helpers such as `SPANNER_SYS.DISTRIBUTION_PERCENTILE`.
+
+```sh
+go run ./cmd/spanner-analyzer \
+  --sql 'SELECT
+           INTERVAL_END,
+           TABLE_NAME,
+           READ_QUERY_COUNT
+         FROM SPANNER_SYS.TABLE_OPERATIONS_STATS_MINUTE'
+```
+
+```sh
+go run ./cmd/spanner-analyzer \
+  --sql 'SELECT
+           SPANNER_SYS.DISTRIBUTION_PERCENTILE(LATENCY_DISTRIBUTION, 99.0) AS p99
+         FROM SPANNER_SYS.QUERY_STATS_TOP_MINUTE'
 ```
 
 The CLI also exposes selected GoogleSQL analyzer options from

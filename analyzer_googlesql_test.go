@@ -279,6 +279,47 @@ FROM INFORMATION_SCHEMA.COLUMNS
 	assertField(t, rowType.Fields[3], "SPANNER_TYPE", spannerpb.TypeCode_STRING)
 }
 
+func TestAnalyzerRowTypeForSpannerSys(t *testing.T) {
+	analyzer, err := NewAnalyzerFromDDL("schema.sql", "")
+	if err != nil {
+		t.Fatalf("NewAnalyzerFromDDL() error = %v", err)
+	}
+	rowType, err := analyzer.RowTypeForStatement(`
+SELECT
+  INTERVAL_END,
+  TABLE_NAME,
+  READ_QUERY_COUNT
+FROM SPANNER_SYS.TABLE_OPERATIONS_STATS_MINUTE
+`)
+	if err != nil {
+		t.Fatalf("RowTypeForStatement() error = %v", err)
+	}
+	if got, want := len(rowType.Fields), 3; got != want {
+		t.Fatalf("len(rowType.Fields) = %d, want %d", got, want)
+	}
+	assertField(t, rowType.Fields[0], "INTERVAL_END", spannerpb.TypeCode_TIMESTAMP)
+	assertField(t, rowType.Fields[1], "TABLE_NAME", spannerpb.TypeCode_STRING)
+	assertField(t, rowType.Fields[2], "READ_QUERY_COUNT", spannerpb.TypeCode_INT64)
+}
+
+func TestAnalyzerRowTypeForSpannerSysDistributionPercentile(t *testing.T) {
+	analyzer, err := NewAnalyzerFromDDL("schema.sql", "")
+	if err != nil {
+		t.Fatalf("NewAnalyzerFromDDL() error = %v", err)
+	}
+	rowType, err := analyzer.RowTypeForStatement(`
+SELECT SPANNER_SYS.DISTRIBUTION_PERCENTILE(LATENCY_DISTRIBUTION, 99.0) AS p99
+FROM SPANNER_SYS.QUERY_STATS_TOP_MINUTE
+`)
+	if err != nil {
+		t.Fatalf("RowTypeForStatement() error = %v", err)
+	}
+	if got, want := len(rowType.Fields), 1; got != want {
+		t.Fatalf("len(rowType.Fields) = %d, want %d", got, want)
+	}
+	assertField(t, rowType.Fields[0], "p99", spannerpb.TypeCode_FLOAT64)
+}
+
 func TestAnalyzerRowTypeForSpannerSearchFunctions(t *testing.T) {
 	const ddl = `
 CREATE TABLE Albums (

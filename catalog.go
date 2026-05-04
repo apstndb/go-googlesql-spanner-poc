@@ -145,6 +145,7 @@ func BuildSchemaCatalog(path, ddlSQL string) (*Catalog, error) {
 		}
 	}
 	catalog.addInformationSchemaTables()
+	catalog.addSpannerSysTables()
 	return catalog, nil
 }
 

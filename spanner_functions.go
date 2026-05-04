@@ -77,6 +77,22 @@ func (c *GoogleSQLCatalog) addSpannerFunctions() error {
 	if err != nil {
 		return err
 	}
+	distributionStructType, err := c.TypeFactory.MakeStructType2([]*googlesql.StructField{
+		{Name: "COUNT", Type_: int64Type},
+		{Name: "MEAN", Type_: doubleType},
+		{Name: "SUM_OF_SQUARED_DEVIATION", Type_: doubleType},
+		{Name: "NUM_FINITE_BUCKETS", Type_: int64Type},
+		{Name: "GROWTH_FACTOR", Type_: doubleType},
+		{Name: "SCALE", Type_: doubleType},
+		{Name: "BUCKET_COUNTS", Type_: int64ArrayType},
+	})
+	if err != nil {
+		return err
+	}
+	distributionArrayType, err := c.TypeFactory.MakeArrayType2(distributionStructType)
+	if err != nil {
+		return err
+	}
 	categoryStructType, err := c.TypeFactory.MakeStructType2([]*googlesql.StructField{
 		{Type_: stringType},
 		{Type_: stringType},
@@ -119,6 +135,12 @@ func (c *GoogleSQLCatalog) addSpannerFunctions() error {
 		return err
 	}
 	if err := c.addScalarFunction("GET_TABLE_COLUMN_IDENTITY_STATE", int64Type, functionArgs(stringType)); err != nil {
+		return err
+	}
+	if err := c.addScalarFunctionAtPath([]string{"SPANNER_SYS", "DISTRIBUTION_PERCENTILE"}, doubleType,
+		functionArgs(distributionArrayType, doubleType),
+		functionArgs(stringType, doubleType),
+	); err != nil {
 		return err
 	}
 	if err := c.addScalarFunction("AI_CLASSIFY", stringType,
@@ -319,7 +341,22 @@ func (c *GoogleSQLCatalog) addScalarFunctionAtPath(namePath []string, resultType
 	if err != nil {
 		return fmt.Errorf("function %s: %w", name, err)
 	}
-	return c.SimpleCatalog.AddFunction(fn)
+	if err := c.SimpleCatalog.AddFunction(fn); err != nil {
+		return err
+	}
+	if len(namePath) > 1 {
+		prefix := strings.Join(namePath[:len(namePath)-1], ".")
+		if catalog := c.simpleCatalogs[prefix]; catalog != nil {
+			leafFn, err := googlesql.NewFunction(namePath[len(namePath)-1:], "Spanner", googlesql.FunctionEnums_ModeScalar, signatures, nil)
+			if err != nil {
+				return fmt.Errorf("function %s: %w", name, err)
+			}
+			if err := catalog.AddFunction(leafFn); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func newFunctionArgumentType(typ googlesql.Googlesql_TypeNode) (*googlesql.FunctionArgumentType, error) {

@@ -146,7 +146,7 @@ DROP TABLE Albums;
 func userTableCount(catalog *Catalog) int {
 	count := 0
 	for name := range catalog.Tables {
-		if strings.HasPrefix(name, informationSchemaName+".") {
+		if strings.HasPrefix(name, informationSchemaName+".") || strings.HasPrefix(name, spannerSysName+".") {
 			continue
 		}
 		count++
