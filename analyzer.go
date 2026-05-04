@@ -99,6 +99,10 @@ func (a *Analyzer) ResolvedASTDebugString(sqlMode, sql string) (string, error) {
 	return a.helper.ResolvedASTDebugString(sqlMode, sql)
 }
 
+func (a *Analyzer) FunctionCatalogDebugString(verbose bool) (string, error) {
+	return a.googleSQL.FunctionCatalogDebugString(verbose)
+}
+
 func (a *Analyzer) AddQueryParameter(name string, spec *TypeSpec) error {
 	typ, err := a.googleSQL.TypeSpecToGoogleSQLType(spec)
 	if err != nil {

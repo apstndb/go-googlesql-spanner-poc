@@ -39,6 +39,17 @@ Output:
 to resolve types named by `CREATE PROTO BUNDLE` or `ALTER PROTO BUNDLE`. The
 flag is repeatable.
 
+Registered GoogleSQL frontend and Spanner function signatures can be dumped
+with the dedicated function catalog command:
+
+```sh
+go run ./cmd/spanner-function-catalog
+```
+
+Use `--verbose=false` to print only function names. `--ddl` and
+`--proto-descriptors-file` are also accepted when the catalog depends on schema
+objects or proto descriptors.
+
 The repository includes the Protocol Buffers example from the Cloud Spanner
 protocol buffers reference under `testdata/protos/`, including
 `order_protos.proto` and its compiled `order_descriptors.pb` descriptor set.

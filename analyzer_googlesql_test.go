@@ -234,6 +234,26 @@ func TestAnalyzerParseUnparseAndResolvedASTDebugString(t *testing.T) {
 	}
 }
 
+func TestAnalyzerFunctionCatalogDebugString(t *testing.T) {
+	analyzer, err := NewAnalyzerFromDDL("schema.sql", "")
+	if err != nil {
+		t.Fatalf("NewAnalyzerFromDDL() error = %v", err)
+	}
+	dump, err := analyzer.FunctionCatalogDebugString(true)
+	if err != nil {
+		t.Fatalf("FunctionCatalogDebugString() error = %v", err)
+	}
+	for _, want := range []string{
+		"GoogleSQL:sum",
+		"Spanner:BIT_REVERSE",
+		"(INT64, BOOL) -> INT64",
+	} {
+		if !strings.Contains(dump, want) {
+			t.Fatalf("FunctionCatalogDebugString() does not contain %q:\n%s", want, dump)
+		}
+	}
+}
+
 func TestAnalyzerRowTypeForSpannerSearchFunctions(t *testing.T) {
 	const ddl = `
 CREATE TABLE Albums (
