@@ -111,6 +111,15 @@ type KeyPart struct {
 	Desc bool
 }
 
+// TypeSpec is this package's internal schema type representation.
+//
+// It intentionally sits between Spanner DDL, the GoogleSQL frontend type
+// system, and spannerpb.Type. Spanner DDL contains details that either are not
+// representable in ResultSet Type metadata or are needed before descriptor
+// resolution, such as TOKENLIST columns, STRING/BYTES length modifiers,
+// STRING(MAX), and named proto or enum references from PROTO BUNDLE. Keeping
+// those details here lets the catalog build GoogleSQL analyzer types first and
+// convert only final analyzer results to spannerpb.Type.
 type TypeSpec struct {
 	Code         spannerpb.TypeCode
 	Tokenlist    bool
