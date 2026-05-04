@@ -311,7 +311,8 @@ func TestAnalyzerRowTypeForSpannerSysDistributionPercentile(t *testing.T) {
 SELECT
   INTERVAL_END,
   AVG_LATENCY_SECONDS,
-  SPANNER_SYS.DISTRIBUTION_PERCENTILE(LATENCY_DISTRIBUTION[OFFSET(0)], 99.0) AS percentile_latency
+  SPANNER_SYS.DISTRIBUTION_PERCENTILE(LATENCY_DISTRIBUTION[OFFSET(0)], 99.0) AS percentile_latency,
+  SPANNER_SYS.DISTRIBUTION_PERCENTILE(LATENCY_DISTRIBUTION_JSON_STRING, 99.0) AS percentile_latency_json
 FROM SPANNER_SYS.QUERY_STATS_TOTAL_10MINUTE
 WHERE INTERVAL_END = (
   SELECT MAX(INTERVAL_END)
@@ -322,12 +323,30 @@ ORDER BY INTERVAL_END
 	if err != nil {
 		t.Fatalf("RowTypeForStatement() error = %v", err)
 	}
-	if got, want := len(rowType.Fields), 3; got != want {
+	if got, want := len(rowType.Fields), 4; got != want {
 		t.Fatalf("len(rowType.Fields) = %d, want %d", got, want)
 	}
 	assertField(t, rowType.Fields[0], "INTERVAL_END", spannerpb.TypeCode_TIMESTAMP)
 	assertField(t, rowType.Fields[1], "AVG_LATENCY_SECONDS", spannerpb.TypeCode_FLOAT64)
 	assertField(t, rowType.Fields[2], "percentile_latency", spannerpb.TypeCode_FLOAT64)
+	assertField(t, rowType.Fields[3], "percentile_latency_json", spannerpb.TypeCode_FLOAT64)
+}
+
+func TestAnalyzerRejectsRawSpannerSysDistributionArrayPercentile(t *testing.T) {
+	analyzer, err := NewAnalyzerFromDDL("schema.sql", "")
+	if err != nil {
+		t.Fatalf("NewAnalyzerFromDDL() error = %v", err)
+	}
+	_, err = analyzer.RowTypeForStatement(`
+SELECT SPANNER_SYS.DISTRIBUTION_PERCENTILE(LATENCY_DISTRIBUTION, 99.0) AS percentile_latency
+FROM SPANNER_SYS.QUERY_STATS_TOTAL_10MINUTE
+`)
+	if err == nil {
+		t.Fatal("RowTypeForStatement() error = nil, want raw ARRAY<STRUCT> percentile argument to be rejected")
+	}
+	if !strings.Contains(err.Error(), "No matching signature for function") {
+		t.Fatalf("RowTypeForStatement() error = %v, want signature mismatch", err)
+	}
 }
 
 func TestAnalyzerRowTypeForSpannerSearchFunctions(t *testing.T) {

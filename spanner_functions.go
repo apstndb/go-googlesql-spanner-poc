@@ -89,10 +89,6 @@ func (c *GoogleSQLCatalog) addSpannerFunctions() error {
 	if err != nil {
 		return err
 	}
-	distributionArrayType, err := c.TypeFactory.MakeArrayType2(distributionStructType)
-	if err != nil {
-		return err
-	}
 	categoryStructType, err := c.TypeFactory.MakeStructType2([]*googlesql.StructField{
 		{Type_: stringType},
 		{Type_: stringType},
@@ -139,7 +135,6 @@ func (c *GoogleSQLCatalog) addSpannerFunctions() error {
 	}
 	if err := c.addScalarFunctionAtPath([]string{"SPANNER_SYS", "DISTRIBUTION_PERCENTILE"}, doubleType,
 		functionArgs(distributionStructType, doubleType),
-		functionArgs(distributionArrayType, doubleType),
 		functionArgs(stringType, doubleType),
 	); err != nil {
 		return err
