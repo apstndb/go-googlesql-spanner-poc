@@ -9,6 +9,7 @@ import (
 
 	spanalyzer "github.com/apstndb/go-googlesql-spanner-poc"
 	googlesql "github.com/goccy/go-googlesql"
+	"github.com/goccy/go-yaml"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -19,7 +20,7 @@ func main() {
 	sql := flag.String("sql", "", "SQL query or expression to analyze")
 	mode := flag.String("mode", "spanner_type", "comma-separated modes: spanner_type, parse, analyze, unparse")
 	sqlMode := flag.String("sql-mode", "query", "how to interpret --sql: query or expression")
-	output := flag.String("output", "json", "output format: json or textproto")
+	output := flag.String("output", "json", "output format: json, yaml, or textproto")
 	productMode := flag.String("product-mode", "", "GoogleSQL product mode: internal or external")
 	strictNameResolution := flag.Bool("strict-name-resolution", false, "enable strict name resolution")
 	foldLiteralCast := flag.Bool("fold-literal-cast", true, "set AnalyzerOptions fold_literal_cast")
@@ -78,11 +79,13 @@ type anyProto interface {
 func marshalProto(message anyProto, output string) ([]byte, error) {
 	switch strings.ToLower(output) {
 	case "json":
-		return protojson.MarshalOptions{
-			Multiline:     true,
-			Indent:        "  ",
-			UseProtoNames: true,
-		}.Marshal(message)
+		return marshalProtoJSON(message)
+	case "yaml":
+		jsonBytes, err := marshalProtoJSON(message)
+		if err != nil {
+			return nil, err
+		}
+		return yaml.JSONToYAML(jsonBytes)
 	case "textproto":
 		return prototext.MarshalOptions{
 			Multiline: true,
@@ -91,6 +94,14 @@ func marshalProto(message anyProto, output string) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("unsupported --output %q", output)
 	}
+}
+
+func marshalProtoJSON(message anyProto) ([]byte, error) {
+	return protojson.MarshalOptions{
+		Multiline:     true,
+		Indent:        "  ",
+		UseProtoNames: true,
+	}.Marshal(message)
 }
 
 func runModes(analyzer *spanalyzer.Analyzer, modes []string, sqlMode, sql, output string) (string, error) {

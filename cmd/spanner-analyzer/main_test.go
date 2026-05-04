@@ -52,6 +52,24 @@ func TestRunModesDefaultReturnsSpannerType(t *testing.T) {
 	}
 }
 
+func TestRunModeSpannerTypeYAML(t *testing.T) {
+	analyzer, err := spanalyzer.NewAnalyzerFromDDL("schema.sql", "")
+	if err != nil {
+		t.Fatalf("NewAnalyzerFromDDL() error = %v", err)
+	}
+
+	out, err := runMode(analyzer, "spanner_type", "expression", "1", "yaml")
+	if err != nil {
+		t.Fatalf("runMode() error = %v", err)
+	}
+	if !strings.Contains(out, "code: INT64") {
+		t.Fatalf("runMode() output = %q, want YAML containing code: INT64", out)
+	}
+	if strings.Contains(out, "{") {
+		t.Fatalf("runMode() output looks like JSON, want YAML:\n%s", out)
+	}
+}
+
 func TestRunModeAnalyzeReturnsResolvedAST(t *testing.T) {
 	analyzer, err := spanalyzer.NewAnalyzerFromDDL("schema.sql", "")
 	if err != nil {

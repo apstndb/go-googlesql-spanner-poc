@@ -222,11 +222,43 @@ go run ./cmd/spanner-analyzer \
          FROM SPANNER_SYS.QUERY_STATS_TOP_MINUTE'
 ```
 
+The Spanner lock statistics documentation uses a join between transaction and
+lock statistics tables. The same shape can be analyzed without DDL:
+
+```sh
+go run ./cmd/spanner-analyzer \
+  --sql 'SELECT
+           t.INTERVAL_END,
+           t.AVG_COMMIT_LATENCY_SECONDS,
+           l.TOTAL_LOCK_WAIT_SECONDS
+         FROM SPANNER_SYS.TXN_STATS_TOTAL_10MINUTE AS t
+         LEFT JOIN SPANNER_SYS.LOCK_STATS_TOTAL_10MINUTE AS l
+           ON t.INTERVAL_END = l.INTERVAL_END
+         ORDER BY t.INTERVAL_END'
+```
+
 The CLI also exposes selected GoogleSQL analyzer options from
 `execute_query_tool`, including `--product-mode`, `--strict-name-resolution`,
 `--fold-literal-cast`, `--prune-unused-columns`, and
 `--parse-location-record-type`. Use `--output textproto` to emit protobuf text
 format instead of JSON.
+
+Use `--output yaml` with `--mode=spanner_type` to emit the Cloud Spanner type
+protobuf as YAML. YAML output is produced by converting the `protojson` result
+with `github.com/goccy/go-yaml`.
+
+```sh
+go run ./cmd/spanner-analyzer \
+  --sql-mode expression \
+  --sql '1' \
+  --output yaml
+```
+
+Output:
+
+```yaml
+code: INT64
+```
 
 `--mode` is inspired by GoogleSQL `execute_query` modes. The default
 `--mode=spanner_type` returns the Cloud Spanner row type for query mode, or a
