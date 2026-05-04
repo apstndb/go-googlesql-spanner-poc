@@ -17,8 +17,7 @@ API names or repositories that still use them.
 go run ./cmd/spanner-analyzer \
   --ddl testdata/order-proto-schema.sql \
   --proto-descriptors-file testdata/protos/order_descriptors.pb \
-  --sql 'SELECT OrderInfo.order_number FROM Orders' \
-  --output yaml
+  --sql 'SELECT OrderInfo.order_number FROM Orders'
 ```
 
 Output:
@@ -83,8 +82,7 @@ go run ./cmd/spanner-analyzer \
       IF(COUNT(*) > 0, "nonempty", "empty") AS status,
       CASE WHEN MAX(Id) >= 100 THEN "large" ELSE "small" END AS id_bucket,
       COALESCE(MIN(OrderInfo.order_number), "none") AS first_order_number
-    FROM Orders' \
-  --output yaml
+    FROM Orders'
 ```
 
 Output:
@@ -120,8 +118,7 @@ go run ./cmd/spanner-analyzer \
   --proto-descriptors-file testdata/protos/order_descriptors.pb \
   --sql-mode expression \
   --sql 'AI.SCORE(@prompt)' \
-  --param 'prompt=STRING(MAX)' \
-  --output yaml
+  --param 'prompt=STRING(MAX)'
 ```
 
 Output:
@@ -137,8 +134,7 @@ go run ./cmd/spanner-analyzer \
   --ddl testdata/order-proto-schema.sql \
   --proto-descriptors-file testdata/protos/order_descriptors.pb \
   --sql-mode expression \
-  --sql 'ARRAY_FIRST([1, 2, 3])' \
-  --output yaml
+  --sql 'ARRAY_FIRST([1, 2, 3])'
 ```
 
 Output:
@@ -152,8 +148,7 @@ go run ./cmd/spanner-analyzer \
   --ddl testdata/order-proto-schema.sql \
   --proto-descriptors-file testdata/protos/order_descriptors.pb \
   --sql-mode expression \
-  --sql 'ARRAY_FIRST(["a", "b"])' \
-  --output yaml
+  --sql 'ARRAY_FIRST(["a", "b"])'
 ```
 
 Output:
@@ -212,18 +207,15 @@ go run ./cmd/spanner-analyzer \
 The CLI also exposes selected GoogleSQL analyzer options from
 `execute_query_tool`, including `--product-mode`, `--strict-name-resolution`,
 `--fold-literal-cast`, `--prune-unused-columns`, and
-`--parse-location-record-type`. Use `--output textproto` to emit protobuf text
-format instead of JSON.
-
-Use `--output yaml` with `--mode=spanner_type` to emit the Cloud Spanner type
-protobuf as YAML. YAML output is produced by converting the `protojson` result
-with `github.com/goccy/go-yaml`.
+`--parse-location-record-type`. `--mode=spanner_type` emits the Cloud Spanner
+type protobuf as YAML by default. YAML output is produced by converting the
+`protojson` result with `github.com/goccy/go-yaml`. Use `--output json` or
+`--output textproto` to emit another protobuf format.
 
 ```sh
 go run ./cmd/spanner-analyzer \
   --sql-mode expression \
-  --sql '1' \
-  --output yaml
+  --sql '1'
 ```
 
 Output:

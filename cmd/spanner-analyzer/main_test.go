@@ -8,6 +8,7 @@ import (
 
 	"cloud.google.com/go/spanner/apiv1/spannerpb"
 	spanalyzer "github.com/apstndb/go-googlesql-spanner-poc"
+	"github.com/goccy/go-yaml"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -39,12 +40,19 @@ func TestRunModesDefaultReturnsSpannerType(t *testing.T) {
 		t.Fatalf("NewAnalyzerFromDDL() error = %v", err)
 	}
 
-	out, err := runModes(analyzer, nil, "expression", "1", "json")
+	out, err := runModes(analyzer, nil, "expression", "1", defaultOutputFormat)
 	if err != nil {
 		t.Fatalf("runModes() error = %v", err)
 	}
+	if strings.Contains(out, "{") {
+		t.Fatalf("runModes() output looks like JSON, want default YAML:\n%s", out)
+	}
+	jsonOut, err := yaml.YAMLToJSON([]byte(out))
+	if err != nil {
+		t.Fatalf("YAMLToJSON() error = %v\n%s", err, out)
+	}
 	var typ spannerpb.Type
-	if err := protojson.Unmarshal([]byte(out), &typ); err != nil {
+	if err := protojson.Unmarshal(jsonOut, &typ); err != nil {
 		t.Fatalf("unmarshal Type output: %v\n%s", err, out)
 	}
 	if got, want := typ.Code, spannerpb.TypeCode_INT64; got != want {

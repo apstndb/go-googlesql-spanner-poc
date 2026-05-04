@@ -20,7 +20,7 @@ func main() {
 	sql := flag.String("sql", "", "SQL query or expression to analyze")
 	mode := flag.String("mode", "spanner_type", "comma-separated modes: spanner_type, parse, analyze, unparse")
 	sqlMode := flag.String("sql-mode", "query", "how to interpret --sql: query or expression")
-	output := flag.String("output", "json", "output format: json, yaml, or textproto")
+	output := flag.String("output", defaultOutputFormat, "output format: yaml, json, or textproto")
 	productMode := flag.String("product-mode", "", "GoogleSQL product mode: internal or external")
 	strictNameResolution := flag.Bool("strict-name-resolution", false, "enable strict name resolution")
 	foldLiteralCast := flag.Bool("fold-literal-cast", true, "set AnalyzerOptions fold_literal_cast")
@@ -60,6 +60,8 @@ func main() {
 	}
 	fmt.Print(result)
 }
+
+const defaultOutputFormat = "yaml"
 
 func readDDL(path string) (string, string, error) {
 	if path == "" {
