@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -36,6 +38,43 @@ func TestBuildQueryMatrixCases(t *testing.T) {
 	}
 	if gotSQL, wantSQL := got[1].SQL, "SELECT 2 FROM Singers"; gotSQL != wantSQL {
 		t.Fatalf("second SQL = %q, want %q", gotSQL, wantSQL)
+	}
+}
+
+func TestLoadQueriesSQLFileSplitsStatementsAndPreservesFormatting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "queries.sql")
+	input := `@{OPTIMIZER_VERSION=1}
+SELECT SingerId, AlbumId, TrackId
+FROM Songs
+WHERE REGEXP_CONTAINS(SongName, "^A.*");
+
+INSERT INTO Singers (SingerId, FirstName)
+VALUES (1, "Alice");
+`
+	if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	queries, err := loadQueries("docs", nil, []string{path})
+	if err != nil {
+		t.Fatalf("loadQueries() error = %v", err)
+	}
+	if got, want := len(queries), 2; got != want {
+		t.Fatalf("len(queries) = %d, want %d", got, want)
+	}
+	if got, want := queries[0].Label, path+"#1"; got != want {
+		t.Fatalf("queries[0].Label = %q, want %q", got, want)
+	}
+	if got := queries[0].SQL; !strings.Contains(got, "\nFROM Songs\n") {
+		t.Fatalf("queries[0].SQL did not preserve formatting: %q", got)
+	}
+	if got, want := queries[0].effectivePlanMode(), planModeReadOnly; got != want {
+		t.Fatalf("queries[0] plan mode = %q, want %q", got, want)
+	}
+	if got, want := queries[1].Label, path+"#2"; got != want {
+		t.Fatalf("queries[1].Label = %q, want %q", got, want)
+	}
+	if got, want := queries[1].effectivePlanMode(), planModeReadWrite; got != want {
+		t.Fatalf("queries[1] plan mode = %q, want %q", got, want)
 	}
 }
 

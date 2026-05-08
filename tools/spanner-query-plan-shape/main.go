@@ -19,6 +19,7 @@ import (
 	"cloud.google.com/go/spanner/apiv1/spannerpb"
 	"github.com/apstndb/spanemuboost"
 	"github.com/cloudspannerecosystem/memefish"
+	"github.com/cloudspannerecosystem/memefish/ast"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -92,7 +93,7 @@ func run(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("spanner-query-plan-shape", flag.ContinueOnError)
 	fs.Var(&ddlFiles, "ddl", "Spanner DDL file to load; may be repeated. Defaults to built-in Singers/Albums DDL")
 	fs.Var(&sqlTexts, "sql", "SQL text to analyze; may be repeated. Overrides --case built-ins when present")
-	fs.Var(&sqlFiles, "sql-file", "SQL file to analyze; may be repeated. Overrides --case built-ins when present")
+	fs.Var(&sqlFiles, "sql-file", "SQL file to analyze; may be repeated and may contain multiple semicolon-separated SQL statements. Overrides --case built-ins when present")
 	builtinCase := fs.String("case", "all", "built-in query case when --sql/--sql-file is omitted: all, docs, optimizer_gaps, optimizer_unhinted_candidates, cte, dml, tvf, lock_hints, full_text_search, function_hint, hint_matrix, statement_hint_query_matrix, join_matrix, subquery_join_hint_matrix, push_broadcast_hash_join, or hash_join")
 	output := fs.String("output", "nodes", "output format: compact-dfs, compact-dfs-metadata, compact-tree, compact-tree-metadata, json, nodes, reference, summary, yaml, or legacy aliases compact/compact-metadata")
 	compactTreeIndexes := fs.Bool("compact-tree-indexes", false, "include PlanNode indexes in compact-tree and compact-tree-metadata output")
@@ -266,10 +267,11 @@ func loadQueries(builtinCase string, sqlTexts, sqlFiles []string) ([]queryCase, 
 		if err != nil {
 			return nil, err
 		}
-		queries = append(queries, queryCase{
-			Label: path,
-			SQL:   string(data),
-		})
+		fileQueries, err := parseSQLFileQueries(path, string(data))
+		if err != nil {
+			return nil, err
+		}
+		queries = append(queries, fileQueries...)
 	}
 	if len(queries) > 0 {
 		return queries, nil
@@ -314,6 +316,41 @@ func loadQueries(builtinCase string, sqlTexts, sqlFiles []string) ([]queryCase, 
 	default:
 		return nil, fmt.Errorf("unsupported --case %q; use all, docs, optimizer_gaps, optimizer_unhinted_candidates, cte, dml, tvf, lock_hints, full_text_search, function_hint, hint_matrix, statement_hint_query_matrix, join_matrix, subquery_join_hint_matrix, push_broadcast_hash_join, or hash_join", builtinCase)
 	}
+}
+
+func parseSQLFileQueries(path, sql string) ([]queryCase, error) {
+	statements, err := memefish.ParseStatements(path, sql)
+	if err != nil {
+		return nil, err
+	}
+	queries := make([]queryCase, 0, len(statements))
+	for i, statement := range statements {
+		querySQL := rawStatementSQL(sql, statement)
+		if querySQL == "" {
+			continue
+		}
+		queries = append(queries, queryCase{
+			Label:    fmt.Sprintf("%s#%d", path, i+1),
+			SQL:      querySQL,
+			PlanMode: planModeForStatement(statement),
+		})
+	}
+	return queries, nil
+}
+
+func rawStatementSQL(source string, statement ast.Statement) string {
+	pos, end := statement.Pos(), statement.End()
+	if !pos.Invalid() && !end.Invalid() && int(pos) >= 0 && int(end) <= len(source) && pos < end {
+		return strings.TrimSpace(source[int(pos):int(end)])
+	}
+	return strings.TrimSpace(statement.SQL())
+}
+
+func planModeForStatement(statement ast.Statement) planMode {
+	if _, ok := statement.(ast.DML); ok {
+		return planModeReadWrite
+	}
+	return planModeAuto
 }
 
 func expandOptimizerVersionMatrix(queries []queryCase) []queryCase {
@@ -612,10 +649,14 @@ func printPlanReference(stdout io.Writer, query queryCase, plan *spannerpb.Query
 	if err := writef(stdout, "=== %s ===\n", query.Label); err != nil {
 		return err
 	}
-	if err := writeln(stdout, strings.TrimSpace(query.SQL)); err != nil {
+	if err := writeln(stdout, displaySQL(query.SQL)); err != nil {
 		return err
 	}
 	return writeln(stdout, rendered)
+}
+
+func displaySQL(sql string) string {
+	return strings.TrimSpace(sql)
 }
 
 func printPlanNodes(stdout io.Writer, query queryCase, plan *spannerpb.QueryPlan) error {
