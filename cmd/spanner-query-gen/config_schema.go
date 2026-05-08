@@ -539,7 +539,7 @@ func planReportContractEvaluationJSONSchema() map[string]interface{} {
 
 func planReportContractRuleResultJSONSchema() map[string]interface{} {
 	schema := objectSchema([]interface{}{"rule", "source", "status"}, map[string]interface{}{
-		"rule":                     enumSchema([]interface{}{"forbid_operator_family", "forbid_blocking_operator_under_limit", "cel"}, "Rule kind."),
+		"rule":                     enumSchema([]interface{}{"forbid_operator_family", "forbid_blocking_operator_under_limit", "forbid_full_scan", "cel"}, "Rule kind."),
 		"source":                   patternStringSchema(planContractRuleResultSourcePattern(), "Original contract source that produced this result, such as use/no_hash_join, forbid[0], or cel."),
 		"predefined":               enumSchema(planContractPredefinedValues(), "Predefined contract name when this result was expanded from use."),
 		"expression":               stringSchema("CEL expression for cel rules."),
@@ -587,6 +587,19 @@ func planReportContractRuleResultJSONSchema() map[string]interface{} {
 			"then": map[string]interface{}{
 				"properties": map[string]interface{}{
 					"source": map[string]interface{}{"const": "use/no_blocking_operator_under_limit"},
+				},
+				"required": []interface{}{"predefined", "observed_count", "max_count", "matched_operator_indexes"},
+				"not":      anyRequired("expression", "operator_family", "diagnostic_id"),
+			},
+		},
+		map[string]interface{}{
+			"if": map[string]interface{}{
+				"properties": map[string]interface{}{"rule": map[string]interface{}{"const": "forbid_full_scan"}},
+				"required":   []interface{}{"rule"},
+			},
+			"then": map[string]interface{}{
+				"properties": map[string]interface{}{
+					"source": map[string]interface{}{"const": "use/no_full_scan"},
 				},
 				"required": []interface{}{"predefined", "observed_count", "max_count", "matched_operator_indexes"},
 				"not":      anyRequired("expression", "operator_family", "diagnostic_id"),
@@ -1106,7 +1119,7 @@ func planContractRuleResultForbidSourcePattern() string {
 func planContractForbidOperatorFamilyPredefinedNames() []string {
 	var names []string
 	for _, name := range planContractPredefinedNames() {
-		if name == "no_blocking_operator_under_limit" {
+		if name == "no_blocking_operator_under_limit" || name == "no_full_scan" {
 			continue
 		}
 		names = append(names, name)

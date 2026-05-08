@@ -82,6 +82,8 @@ type resolvedPredicate struct {
 const (
 	ruleForbidOperatorFamily               = "forbid_operator_family"
 	ruleForbidBlockingOperatorUnderLimit   = "forbid_blocking_operator_under_limit"
+	ruleForbidFullScan                     = "forbid_full_scan"
+	predefinedNoFullScan                   = "no_full_scan"
 	predefinedNoBlockingOperatorUnderLimit = "no_blocking_operator_under_limit"
 )
 
@@ -443,6 +445,23 @@ func evaluatePredicate(query Query, predicate resolvedPredicate) (RuleResult, er
 			result.Remediation = blockingOperatorUnderLimitRemediation()
 		}
 		return result, nil
+	case ruleForbidFullScan:
+		matchedOperatorIndexes := fullScanOperatorIndexes(query)
+		result := RuleResult{
+			Rule:                   ruleForbidFullScan,
+			Source:                 predicate.Source,
+			Predefined:             predicate.Predefined,
+			Status:                 StatusPass,
+			ObservedCount:          len(matchedOperatorIndexes),
+			MaxCount:               0,
+			MatchedOperatorIndexes: &matchedOperatorIndexes,
+		}
+		if len(matchedOperatorIndexes) > 0 {
+			result.Status = StatusFail
+			result.FailureKind = FailureKindViolation
+			result.Remediation = fullScanRemediation()
+		}
+		return result, nil
 	default:
 		return RuleResult{}, fmt.Errorf("unsupported plan contract rule %q", rule)
 	}
@@ -703,6 +722,8 @@ func predicates(contract Contract) ([]resolvedPredicate, error) {
 			appendPredefined("hash_aggregate")
 		case "no_stream_aggregate":
 			appendPredefined("stream_aggregate")
+		case predefinedNoFullScan:
+			appendPredefinedRule(ruleForbidFullScan)
 		case predefinedNoBlockingOperatorUnderLimit:
 			appendPredefinedRule(ruleForbidBlockingOperatorUnderLimit)
 		default:
@@ -977,6 +998,17 @@ func blockingOperatorUnderLimitIndexes(query Query) []int32 {
 	return indexes
 }
 
+func fullScanOperatorIndexes(query Query) []int32 {
+	indexes := []int32{}
+	for _, operator := range query.NormalizedOperators {
+		if operator.Family == "scan" && operator.FullScan {
+			indexes = append(indexes, operator.Index)
+		}
+	}
+	sort.Slice(indexes, func(i, j int) bool { return indexes[i] < indexes[j] })
+	return indexes
+}
+
 func limitOrSortLimitOperator(operator Operator) bool {
 	if operator.Family == "limit" {
 		return true
@@ -1230,6 +1262,23 @@ func blockingOperatorUnderLimitRemediation() []Remediation {
 			AppliesTo:  "sql",
 			Confidence: "medium",
 			Message:    "Review blocking descendants under Limit or Sort Limit; prefer an order-preserving access path, stream aggregate, merge/apply join, or remove the LIMIT/ORDER BY requirement when it is not needed.",
+		},
+	}
+}
+
+func fullScanRemediation() []Remediation {
+	return []Remediation{
+		{
+			Kind:       "index_design",
+			AppliesTo:  "ddl",
+			Confidence: "medium",
+			Message:    "Review whether a table or secondary index key can satisfy the query predicates as Seek Conditions instead of a full scan.",
+		},
+		{
+			Kind:       "query_shape",
+			AppliesTo:  "sql",
+			Confidence: "medium",
+			Message:    "Check whether important filters are residual conditions; for sharded timestamp queries, prefer equality probes per shard when timestamp range seekability matters.",
 		},
 	}
 }
@@ -1492,6 +1541,7 @@ func PredefinedNames() []string {
 		"no_merge_join",
 		"no_hash_aggregate",
 		"no_stream_aggregate",
+		predefinedNoFullScan,
 		predefinedNoBlockingOperatorUnderLimit,
 	}
 }

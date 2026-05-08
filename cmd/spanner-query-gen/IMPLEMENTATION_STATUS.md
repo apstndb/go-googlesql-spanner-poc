@@ -58,6 +58,9 @@ deliberate deferrals.
 - Plan-report schema conditionals couple `contract_rule_result.rule` to its
   `source` kind, so CEL results cannot claim `source: use/<predefined>` and
   forbid-operator-family results cannot claim `source: cel`.
+- `no_full_scan` is implemented as a metadata rule rather than an operator
+  family rule; its result uses `rule: forbid_full_scan` and reports matching
+  scan operator indexes.
 - CEL rule failures use `failure_kind: violation`; `classification_unknown`
   remains reserved for predefined or direct `forbid_operator_family` rules.
 - CEL contracts that read metadata-derived normalized fields, such as

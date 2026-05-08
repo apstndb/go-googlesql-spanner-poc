@@ -221,13 +221,16 @@ The v1alpha predefined set is intentionally small:
 | `no_merge_join` | `merge_join` | Reject Merge Join operators. |
 | `no_hash_aggregate` | `hash_aggregate` | Reject hash aggregate operators. |
 | `no_stream_aggregate` | `stream_aggregate` | Reject stream aggregate operators. |
+| `no_full_scan` | metadata rule | Reject scan operators whose metadata says `Full scan: true`. |
 | `no_blocking_operator_under_limit` | topology rule | Reject stream-blocking descendants below `Limit` or `Sort Limit`. `Minor Sort Limit` is not treated as blocking by this rule. |
 
 The table above is the public predefined vocabulary. Conceptually, each
 operator-family predefined contract expands to direct `forbid.operator_family`
-rules like the following. `no_blocking_operator_under_limit` is different: it
-uses a topology-aware rule because it depends on ancestor/descendant
-relationships, not only whole-plan counts.
+rules like the following. `no_full_scan` and
+`no_blocking_operator_under_limit` are different: `no_full_scan` reads
+normalized scan metadata, while `no_blocking_operator_under_limit` uses a
+topology-aware rule because it depends on ancestor/descendant relationships,
+not only whole-plan counts.
 
 ```yaml
 contracts:
@@ -298,6 +301,11 @@ contracts:
   target: query/Target
   forbid:
   - operator_family: stream_aggregate
+
+- name: NoFullScan
+  target: query/Target
+  use:
+  - no_full_scan
 
 - name: NoBlockingOperatorUnderLimit
   target: query/Target
@@ -383,6 +391,10 @@ contracts:
   target: query/Target
   cel: operator_family_counts["stream_aggregate"] == 0
 
+- name: NoFullScanCEL
+  target: query/Target
+  cel: operators.all(o, !(o.family == "scan" && o.full_scan))
+
 - name: NoBlockingOperatorUnderLimitCEL
   target: query/Target
   cel: |
@@ -451,7 +463,8 @@ The plan-report schema also enforces the rule/source kind coupling:
 `rule: cel` requires `source: cel`, while `rule: forbid_operator_family`
 requires `source: use/<operator-family-predefined-name>` or
 `source: forbid[n]`, and `rule: forbid_blocking_operator_under_limit` requires
-`source: use/no_blocking_operator_under_limit`.
+`source: use/no_blocking_operator_under_limit`. `rule: forbid_full_scan`
+requires `source: use/no_full_scan`.
 Direct `forbid` entries must not repeat the same `operator_family` within one
 contract. Runtime validation rejects duplicates with
 `plan_contract.duplicate_forbid_operator_family` rather than merging ambiguous
@@ -459,10 +472,11 @@ rules.
 Contract names must also be unique within one contract file; duplicate names
 are rejected with `plan_contract.duplicate_contract_name`.
 
-For `forbid_operator_family` rules, `matched_operator_indexes` is always
-present: it is `[]` when `observed_count == 0`, otherwise it contains every
-matching `normalized_operators[].index` in ascending order. CEL rules do not
-emit `matched_operator_indexes` in v1alpha.
+For `forbid_operator_family`, `forbid_full_scan`, and
+`forbid_blocking_operator_under_limit` rules, `matched_operator_indexes` is
+always present: it is `[]` when `observed_count == 0`, otherwise it contains
+every matching `normalized_operators[].index` in ascending order. CEL rules do
+not emit `matched_operator_indexes` in v1alpha.
 
 For concrete families, matching means `operator.family == operator_family`.
 For derived umbrella families, `matched_operator_indexes` contains indexes of
@@ -476,6 +490,12 @@ the `Limit` or `Sort Limit` ancestor indexes. This is useful for queries where
 a limiting operator is expected to stream early rows but a descendant full sort,
 hash aggregate, hash join, BloomFilterBuild, or SpoolBuild can force upstream
 materialization first.
+
+For `forbid_full_scan` rules, `matched_operator_indexes` contains scan
+operators whose normalized metadata has `full_scan: true`. This rule is a
+PLAN-level early warning only: it does not prove how many rows are scanned, and
+a non-full scan can still read too many rows if important predicates remain as
+residual conditions.
 
 The plan-contract and plan-report `operator_family` schema enums are generated
 from the same normalizer registry used by `plan-report`; the two schema enums

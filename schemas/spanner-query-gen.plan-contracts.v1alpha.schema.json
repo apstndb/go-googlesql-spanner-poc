@@ -55,6 +55,7 @@
               "no_merge_join",
               "no_hash_aggregate",
               "no_stream_aggregate",
+              "no_full_scan",
               "no_blocking_operator_under_limit"
             ]
           },

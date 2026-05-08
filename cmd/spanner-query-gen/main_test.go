@@ -857,7 +857,7 @@ func TestPlanReportSchemaContractConditionals(t *testing.T) {
 		t.Fatalf("contract_evaluation allOf length = %d, want %d", got, want)
 	}
 	result := defs["contract_rule_result"].(map[string]interface{})
-	if got, want := len(result["allOf"].([]interface{})), 10; got != want {
+	if got, want := len(result["allOf"].([]interface{})), 11; got != want {
 		t.Fatalf("contract_rule_result allOf length = %d, want %d", got, want)
 	}
 	resultProperties := result["properties"].(map[string]interface{})
@@ -919,7 +919,24 @@ func TestPlanReportSchemaContractConditionals(t *testing.T) {
 	if got, want := strings.Join(blockingForbidden, ","), "expression,operator_family,diagnostic_id"; got != want {
 		t.Fatalf("blocking-operator-under-limit forbidden fields = %q, want %q", got, want)
 	}
-	celFailClause := result["allOf"].([]interface{})[3].(map[string]interface{})
+	fullScanClause := result["allOf"].([]interface{})[3].(map[string]interface{})
+	fullScanThen := fullScanClause["then"].(map[string]interface{})
+	fullScanThenProperties := fullScanThen["properties"].(map[string]interface{})
+	fullScanThenSource := fullScanThenProperties["source"].(map[string]interface{})
+	if got, want := fullScanThenSource["const"], "use/no_full_scan"; got != want {
+		t.Fatalf("full-scan source const = %v, want %v", got, want)
+	}
+	fullScanRequired := interfaceStrings(fullScanThen["required"].([]interface{}))
+	for _, want := range []string{"predefined", "observed_count", "max_count", "matched_operator_indexes"} {
+		if !slices.Contains(fullScanRequired, want) {
+			t.Fatalf("full-scan required fields = %v, want %q", fullScanRequired, want)
+		}
+	}
+	fullScanForbidden := anyOfRequiredFields(fullScanThen["not"].(map[string]interface{}))
+	if got, want := strings.Join(fullScanForbidden, ","), "expression,operator_family,diagnostic_id"; got != want {
+		t.Fatalf("full-scan forbidden fields = %q, want %q", got, want)
+	}
+	celFailClause := result["allOf"].([]interface{})[4].(map[string]interface{})
 	celFailThen := celFailClause["then"].(map[string]interface{})
 	celFailThenProperties := celFailThen["properties"].(map[string]interface{})
 	celFailKind := celFailThenProperties["failure_kind"].(map[string]interface{})
@@ -2427,6 +2444,71 @@ func TestPlanReportBlockingOperatorUnderLimitContract(t *testing.T) {
 		}
 	}
 	if got, want := report.ContractSummary.Failed, 3; got != want {
+		t.Fatalf("contract summary failed = %d, want %d", got, want)
+	}
+}
+
+func TestPlanReportFullScanContract(t *testing.T) {
+	report := planReport{
+		Status:  "ok",
+		Backend: "omni",
+		Queries: []planReportQuery{
+			{
+				Name:   "FullScanLookup",
+				Scope:  "query",
+				Status: "ok",
+				NormalizedOperators: []planReportOperator{
+					{Index: 7, DisplayName: "Index Scan on FooByTimestamp", Family: "scan", ScanType: "index_scan", ScanTarget: "FooByTimestamp", FullScan: true},
+				},
+			},
+			{
+				Name:   "SeekLookup",
+				Scope:  "query",
+				Status: "ok",
+				NormalizedOperators: []planReportOperator{
+					{Index: 8, DisplayName: "Index Scan on FooByTimestamp", Family: "scan", ScanType: "index_scan", ScanTarget: "FooByTimestamp", SeekableKeySize: "2"},
+				},
+			},
+		},
+	}
+	contracts := planContractsFile{
+		Version: planContractFileVersionV1Alpha,
+		Contracts: []planContract{
+			{Name: "NoFullScanRejectsFullScan", Target: "query/FullScanLookup", Use: []string{"no_full_scan"}},
+			{Name: "NoFullScanAllowsSeekScan", Target: "query/SeekLookup", Use: []string{"no_full_scan"}},
+		},
+	}
+	if err := applyPlanContracts(&report, contracts); err != nil {
+		t.Fatalf("applyPlanContracts() error = %v", err)
+	}
+	failing := report.ContractEvaluations[0]
+	if got, want := failing.Status, planContractStatusFail; got != want {
+		t.Fatalf("full scan evaluation status = %q, want %q", got, want)
+	}
+	result := failing.Results[0]
+	if got, want := result.Rule, "forbid_full_scan"; got != want {
+		t.Fatalf("full scan rule = %q, want %q", got, want)
+	}
+	if got, want := result.Source, "use/no_full_scan"; got != want {
+		t.Fatalf("full scan source = %q, want %q", got, want)
+	}
+	if got, want := result.Predefined, "no_full_scan"; got != want {
+		t.Fatalf("full scan predefined = %q, want %q", got, want)
+	}
+	if result.OperatorFamily != "" {
+		t.Fatalf("full scan operator_family = %q, want empty for metadata rule", result.OperatorFamily)
+	}
+	if got := planContractMatchedOperatorIndexes(result); !reflect.DeepEqual(got, []int32{7}) {
+		t.Fatalf("full scan matched operator indexes = %v, want [7]", got)
+	}
+	passing := report.ContractEvaluations[1]
+	if got, want := passing.Status, planContractStatusPass; got != want {
+		t.Fatalf("seek scan evaluation status = %q, want %q", got, want)
+	}
+	if got := planContractMatchedOperatorIndexes(passing.Results[0]); !reflect.DeepEqual(got, []int32{}) {
+		t.Fatalf("seek scan matched operator indexes = %v, want []", got)
+	}
+	if got, want := report.ContractSummary.Failed, 1; got != want {
 		t.Fatalf("contract summary failed = %d, want %d", got, want)
 	}
 }

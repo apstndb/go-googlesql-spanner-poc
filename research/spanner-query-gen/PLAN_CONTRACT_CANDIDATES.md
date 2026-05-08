@@ -69,6 +69,9 @@ alias for forbidding one or more normalized operator families.
 - `no_stream_aggregate`: forbids `stream_aggregate`.
   This is mostly useful for testing and debugging because the common production
   preference is usually the opposite.
+- `no_full_scan`: rejects scan operators whose normalized metadata has
+  `full_scan: true`. This is a PLAN-level early warning, not a proof of rows
+  scanned.
 - `no_blocking_operator_under_limit`: rejects stream-blocking descendants below
   `Limit` or `Sort Limit`. This is topology-aware rather than a plain
   operator-family count; it is intended for cases where a limiting operator is
@@ -289,9 +292,9 @@ checks generic operator and metadata patterns:
 - metadata `iterator_type: Hash`: suggests stream aggregation.
 - metadata `join_type: Hash`: suggests Cross Apply or Merge Join.
 
-The current v1alpha contracts already cover the broad sort, hash join, and hash
-aggregate cases. The remaining directly reusable ideas are `no_full_scan`,
-`no_residual_condition`, and a more positive `require_seekable_scan`.
+The current v1alpha contracts already cover the broad sort, hash join, hash
+aggregate, and full-scan cases. The remaining directly reusable ideas are
+`no_residual_condition` and a more positive `require_seekable_scan`.
 
 ### `spanneropttools`
 
@@ -319,10 +322,11 @@ as the table scan before reporting a back join.
 
 ## Strong Candidates For Predefined Contracts
 
-### `no_full_scan`
+### Promoted: `no_full_scan`
 
-Intent: catch OLTP queries that scan a whole table or index when a selective
-seek was expected.
+`no_full_scan` is now implemented as a predefined metadata rule. It catches
+OLTP queries that scan a whole table or index when a selective seek was
+expected.
 
 Why it matters: `Full scan: true` on growing tables is a common early warning
 sign. This is especially important in read-write transactions because broad
@@ -334,13 +338,11 @@ Current CEL equivalent:
 operators.all(o, !o.full_scan)
 ```
 
-Implementation notes:
+Remaining follow-up:
 
-- This needs a non-operator-family rule kind because `full_scan` is metadata on
-  scan operators, not a family.
-- It should support allowlists because small/static master tables and intended
-  full index scans are legitimate.
-- A useful direct shape would be:
+- Add allowlists because small/static master tables and intended full index
+  scans are legitimate.
+- Consider a direct scan predicate shape such as:
 
 ```yaml
 forbid:
@@ -386,6 +388,12 @@ Current CEL example:
 operators.exists(o, o.scan_target == "SingersByLastName" && o.seekable_key_size == "1")
 ```
 
+For sharded timestamp-order queries, the observed difference between
+`shard_id BETWEEN 0 AND 9` and an equality-probe rewrite is exactly this kind
+of signal: the range form can still use the index but only report
+`seekable_key_size == "1"` with timestamp filtering left outside the full key
+seek, while the per-shard equality probe can reach `seekable_key_size == "2"`.
+
 Potential direct rule:
 
 ```yaml
@@ -400,6 +408,9 @@ Limitations:
 - `seekable_key_size` alone cannot prove the seek range is semantically narrow.
   A range such as `UserId BETWEEN min AND max` can still be too broad. That
   needs query-specific review or future SQL/parameter-aware checks.
+- It also cannot replace PROFILE when the plan shape is identical but scan-row
+  count changes. `GROUPBY_SCAN_OPTIMIZATION` is a known example where the plan
+  can remain structurally similar while rows scanned differ.
 - Numeric comparison should use a normalized `seekable_key_size_int` instead of
   string comparison.
 
@@ -472,6 +483,12 @@ the intended order instead of sorting late.
 
 Why it matters: `ORDER BY ... LIMIT` becomes efficient only when the index order
 lets Spanner stop early.
+
+For globally ordered access over sharded timestamp keys, a full/global
+`Sort Limit` is usually the shape to reject. Per-shard local limits followed by
+a small global merge/sort can be acceptable, so this candidate should compose
+with `no_full_sort`, `no_blocking_operator_under_limit`, and future
+seekability/index-only checks rather than replacing them.
 
 Implementation notes:
 

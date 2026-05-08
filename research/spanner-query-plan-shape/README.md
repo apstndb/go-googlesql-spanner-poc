@@ -25,6 +25,9 @@ stable CLI contract.
 - [`OPTIMIZER_VERSION_RENDERED_EXAMPLES.md`](OPTIMIZER_VERSION_RENDERED_EXAMPLES.md):
   representative optimizer-version before/after examples rendered with
   `spannerplan` reference output.
+- [`TIMESTAMP_ORDERED_SHARD_QUERY_OBSERVATIONS.md`](TIMESTAMP_ORDERED_SHARD_QUERY_OBSERVATIONS.md):
+  Stack Overflow timestamp-ordered sharded index query examples checked against
+  rendered Spanner plan output.
 - [`spanner-hacks-optimizer-version-feedback-ja.md`](spanner-hacks-optimizer-version-feedback-ja.md):
   candidate optimizer-version before/after examples for Spanner Unofficial
   Hacks, with `spannerplan` reference output.
