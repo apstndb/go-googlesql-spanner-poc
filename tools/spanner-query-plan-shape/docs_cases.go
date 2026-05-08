@@ -1,5 +1,7 @@
 package main
 
+import "strings"
+
 const docsDDL = `
 CREATE TABLE Singers (
   SingerId INT64 NOT NULL,
@@ -340,6 +342,7 @@ var docsQueries = []queryCase{
 
 var statementHintQueryMatrixQueries = buildStatementHintQueryMatrixQueries()
 var functionHintQueries = buildFunctionHintQueries()
+var optimizerUnhintedCandidateQueries = buildOptimizerUnhintedCandidateQueries()
 
 var optimizerGapQueries = []queryCase{
 	{
@@ -447,6 +450,27 @@ WHERE SongName LIKE "A%z"`,
 		Label: "optimizer-gaps/v2/group-by-scan-prefix",
 		SQL:   `SELECT s.SingerId, s.AlbumId FROM Songs AS s GROUP BY s.SingerId, s.AlbumId`,
 	},
+}
+
+func buildOptimizerUnhintedCandidateQueries() []queryCase {
+	inputs := append([]queryCase{}, docsQueries...)
+	inputs = append(inputs, optimizerGapQueries...)
+	out := make([]queryCase, 0, len(inputs))
+	seenSQL := map[string]bool{}
+	for _, query := range inputs {
+		sql := stripGoogleSQLHints(query.SQL)
+		key := strings.Join(strings.Fields(sql), " ")
+		if seenSQL[key] {
+			continue
+		}
+		seenSQL[key] = true
+		out = append(out, queryCase{
+			Label:    "optimizer-unhinted-candidates/" + query.Label,
+			SQL:      sql,
+			PlanMode: query.PlanMode,
+		})
+	}
+	return out
 }
 
 func buildFunctionHintQueries() []queryCase {

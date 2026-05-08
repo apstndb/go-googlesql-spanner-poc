@@ -146,6 +146,22 @@ go run ./tools/spanner-query-plan-shape \
 When a query already has a leading statement hint, this keeps the other hint
 assignments and replaces only `OPTIMIZER_VERSION`.
 
+For optimizer behavior probes, prefer starting from unhinted queries. The
+`optimizer_unhinted_candidates` case is generated from the `docs` and
+`optimizer_gaps` query sets with all `@{...}` hints stripped outside string
+literals. Use `--optimizer-version-diff` to analyze versions 1 through 8 and
+print only queries whose compact-tree-metadata shape, or planning error shape,
+actually changes:
+
+```sh
+go run ./tools/spanner-query-plan-shape \
+  --case optimizer_unhinted_candidates \
+  --optimizer-version-diff
+```
+
+This keeps broad exploratory input separate from the smaller set of probes that
+are worth preserving as optimizer-version evidence.
+
 Expand a query set across `ALLOW_DISTRIBUTED_MERGE` default, `TRUE`, and
 `FALSE`. This can be combined with `--optimizer-version-matrix`:
 
@@ -226,7 +242,9 @@ without metadata, `--output summary` for node names,
 wrap the raw query plan protobuf with the query label and SQL, or the default
 `--output nodes` for node metadata. Use `--compact-tree-indexes` to include
 PlanNode indexes in compact tree outputs, `--optimizer-version-matrix` to
-repeat the selected queries with statement-level optimizer version hints, and
+repeat the selected queries with statement-level optimizer version hints,
+`--optimizer-version-diff` to print only queries whose v1-v8
+compact-tree-metadata/error shape changes, and
 `--allow-distributed-merge-matrix` to repeat them with
 `ALLOW_DISTRIBUTED_MERGE` default, `TRUE`, and `FALSE`.
 The raw YAML output is converted from the same JSON envelope that contains the

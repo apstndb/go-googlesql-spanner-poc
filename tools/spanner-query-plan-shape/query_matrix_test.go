@@ -184,6 +184,95 @@ func TestLoadQueriesOptimizerGaps(t *testing.T) {
 	}
 }
 
+func TestLoadQueriesOptimizerUnhintedCandidates(t *testing.T) {
+	queries, err := loadQueries("optimizer_unhinted_candidates", nil, nil)
+	if err != nil {
+		t.Fatalf("loadQueries(%q) error = %v", "optimizer_unhinted_candidates", err)
+	}
+	if len(queries) == 0 {
+		t.Fatal("loadQueries(\"optimizer_unhinted_candidates\") returned no queries")
+	}
+	seen := map[string]queryCase{}
+	for _, query := range queries {
+		seen[query.Label] = query
+		if strings.Contains(query.SQL, "@{") {
+			t.Fatalf("%s still contains a hint: %s", query.Label, query.SQL)
+		}
+	}
+	for _, label := range []string{
+		"optimizer-unhinted-candidates/execution-plans/index-with-back-join",
+		"optimizer-unhinted-candidates/binary/hash-join",
+		"optimizer-unhinted-candidates/unary/minor-sort-stream-aggregate",
+		"optimizer-unhinted-candidates/optimizer-gaps/v2/regexp-contains-prefix-forced-index",
+		"optimizer-unhinted-candidates/optimizer-gaps/v6/dml-insert-select-filter",
+	} {
+		if _, ok := seen[label]; !ok {
+			t.Fatalf("loadQueries(\"optimizer_unhinted_candidates\") missing %s", label)
+		}
+	}
+	if got := seen["optimizer-unhinted-candidates/unary/minor-sort-stream-aggregate"].SQL; !strings.Contains(got, "GROUP BY") || strings.Contains(got, "GROUP@") {
+		t.Fatalf("group hint was not stripped cleanly: %s", got)
+	}
+	if got, want := seen["optimizer-unhinted-candidates/optimizer-gaps/v6/dml-insert-select-filter"].effectivePlanMode(), planModeReadWrite; got != want {
+		t.Fatalf("DML unhinted optimizer candidate plan mode = %q, want %q", got, want)
+	}
+}
+
+func TestStripGoogleSQLHints(t *testing.T) {
+	tests := []struct {
+		name string
+		sql  string
+		want string
+	}{
+		{
+			name: "statement",
+			sql:  "@{OPTIMIZER_VERSION=5} SELECT 1",
+			want: "SELECT 1",
+		},
+		{
+			name: "table_join_group_and_function",
+			sql:  `SELECT SHA512(SingerInfo) @{DISABLE_INLINE=TRUE} FROM Singers@{FORCE_INDEX=_BASE_TABLE} JOIN@{JOIN_METHOD=HASH_JOIN} Albums USING(SingerId) GROUP@{GROUP_METHOD=STREAM_GROUP} BY SingerId`,
+			want: `SELECT SHA512(SingerInfo) FROM Singers JOIN Albums USING(SingerId) GROUP BY SingerId`,
+		},
+		{
+			name: "string_literal",
+			sql:  `SELECT "@{not_a_hint}" AS s, '@{also_not_a_hint}' AS t`,
+			want: `SELECT "@{not_a_hint}" AS s, '@{also_not_a_hint}' AS t`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stripGoogleSQLHints(tt.sql); got != tt.want {
+				t.Fatalf("stripGoogleSQLHints() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGroupOptimizerVersionShapes(t *testing.T) {
+	shapes := []optimizerVersionShape{
+		{version: 1, shape: "A"},
+		{version: 2, shape: "A"},
+		{version: 3, shape: "B"},
+		{version: 4, shape: "B"},
+		{version: 5, shape: "A"},
+	}
+	got := groupOptimizerVersionShapes(shapes)
+	want := []optimizerVersionShapeGroup{
+		{label: "v1-v2", shape: "A"},
+		{label: "v3-v4", shape: "B"},
+		{label: "v5", shape: "A"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len(groupOptimizerVersionShapes()) = %d, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("group %d = %#v, want %#v", i, got[i], want[i])
+		}
+	}
+}
+
 func TestLoadQueriesFullTextSearch(t *testing.T) {
 	queries, err := loadQueries("full_text_search", nil, nil)
 	if err != nil {

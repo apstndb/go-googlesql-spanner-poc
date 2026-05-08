@@ -27,6 +27,7 @@ Related local evidence:
 
 - [Query execution operator observations](QUERY_EXECUTION_OPERATORS_OBSERVATIONS.md)
 - [Optimizer-version matrix observations](OPTIMIZER_VERSION_MATRIX_OBSERVATIONS.md)
+- [Optimizer-version rendered examples](OPTIMIZER_VERSION_RENDERED_EXAMPLES.md)
 - [Spanner Unofficial Hacks follow-up](spanner-hacks-operators-feedback-ja.md)
 - [Rendered plan evidence](spanner-hacks-operators-feedback/README.md)
 

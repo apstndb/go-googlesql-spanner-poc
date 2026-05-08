@@ -93,15 +93,19 @@ func run(args []string, stdout io.Writer) error {
 	fs.Var(&ddlFiles, "ddl", "Spanner DDL file to load; may be repeated. Defaults to built-in Singers/Albums DDL")
 	fs.Var(&sqlTexts, "sql", "SQL text to analyze; may be repeated. Overrides --case built-ins when present")
 	fs.Var(&sqlFiles, "sql-file", "SQL file to analyze; may be repeated. Overrides --case built-ins when present")
-	builtinCase := fs.String("case", "all", "built-in query case when --sql/--sql-file is omitted: all, docs, optimizer_gaps, cte, dml, tvf, full_text_search, function_hint, hint_matrix, statement_hint_query_matrix, join_matrix, subquery_join_hint_matrix, push_broadcast_hash_join, or hash_join")
+	builtinCase := fs.String("case", "all", "built-in query case when --sql/--sql-file is omitted: all, docs, optimizer_gaps, optimizer_unhinted_candidates, cte, dml, tvf, full_text_search, function_hint, hint_matrix, statement_hint_query_matrix, join_matrix, subquery_join_hint_matrix, push_broadcast_hash_join, or hash_join")
 	output := fs.String("output", "nodes", "output format: compact-dfs, compact-dfs-metadata, compact-tree, compact-tree-metadata, json, nodes, reference, summary, yaml, or legacy aliases compact/compact-metadata")
 	compactTreeIndexes := fs.Bool("compact-tree-indexes", false, "include PlanNode indexes in compact-tree and compact-tree-metadata output")
 	optimizerVersionMatrix := fs.Bool("optimizer-version-matrix", false, "expand each query with OPTIMIZER_VERSION statement hints for versions 1 through 8")
+	optimizerVersionDiff := fs.Bool("optimizer-version-diff", false, "analyze each query with optimizer versions 1 through 8 and print only queries whose compact-tree-metadata shape changes")
 	allowDistributedMergeMatrix := fs.Bool("allow-distributed-merge-matrix", false, "expand each query across ALLOW_DISTRIBUTED_MERGE unspecified, TRUE, and FALSE")
 	continueOnError := fs.Bool("continue-on-error", false, "print errors and continue analyzing remaining queries")
 	timeout := fs.Duration("timeout", 5*time.Minute, "maximum time to start Spanner Omni and analyze queries")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *optimizerVersionDiff && *optimizerVersionMatrix {
+		return fmt.Errorf("--optimizer-version-diff already expands optimizer versions; do not combine it with --optimizer-version-matrix")
 	}
 
 	queries, err := loadQueries(*builtinCase, sqlTexts, sqlFiles)
@@ -140,6 +144,9 @@ func run(args []string, stdout io.Writer) error {
 		_ = clients.Close()
 	}()
 
+	if *optimizerVersionDiff {
+		return printOptimizerVersionDiffs(ctx, stdout, clients.Client, queries)
+	}
 	if isRawPlanOutput(*output) {
 		return printRawPlans(ctx, stdout, clients.Client, queries, *output, *continueOnError)
 	}
@@ -199,7 +206,8 @@ func loadDDLs(builtinCase string, paths []string) ([]string, error) {
 		if strings.EqualFold(strings.TrimSpace(builtinCase), "full_text_search") {
 			return parseBuiltInDDLs("full-text-search-schema.sql", fullTextSearchDDL)
 		}
-		if strings.EqualFold(strings.TrimSpace(builtinCase), "optimizer_gaps") {
+		if strings.EqualFold(strings.TrimSpace(builtinCase), "optimizer_gaps") ||
+			strings.EqualFold(strings.TrimSpace(builtinCase), "optimizer_unhinted_candidates") {
 			return parseBuiltInDDLs("optimizer-gaps-schema.sql", optimizerGapsDDL)
 		}
 		if strings.EqualFold(strings.TrimSpace(builtinCase), "docs") ||
@@ -274,6 +282,8 @@ func loadQueries(builtinCase string, sqlTexts, sqlFiles []string) ([]queryCase, 
 		return docsQueries, nil
 	case "optimizer_gaps":
 		return optimizerGapQueries, nil
+	case "optimizer_unhinted_candidates":
+		return optimizerUnhintedCandidateQueries, nil
 	case "cte":
 		return cteQueries, nil
 	case "dml":
@@ -297,7 +307,7 @@ func loadQueries(builtinCase string, sqlTexts, sqlFiles []string) ([]queryCase, 
 	case "hash_join":
 		return []queryCase{{Label: "HASH_JOIN", SQL: hashSQL}}, nil
 	default:
-		return nil, fmt.Errorf("unsupported --case %q; use all, docs, optimizer_gaps, cte, dml, tvf, full_text_search, function_hint, hint_matrix, statement_hint_query_matrix, join_matrix, subquery_join_hint_matrix, push_broadcast_hash_join, or hash_join", builtinCase)
+		return nil, fmt.Errorf("unsupported --case %q; use all, docs, optimizer_gaps, optimizer_unhinted_candidates, cte, dml, tvf, full_text_search, function_hint, hint_matrix, statement_hint_query_matrix, join_matrix, subquery_join_hint_matrix, push_broadcast_hash_join, or hash_join", builtinCase)
 	}
 }
 
@@ -335,6 +345,118 @@ func expandAllowDistributedMergeMatrix(queries []queryCase) []queryCase {
 		})
 	}
 	return out
+}
+
+type optimizerVersionShape struct {
+	version int
+	shape   string
+}
+
+func printOptimizerVersionDiffs(ctx context.Context, stdout io.Writer, client *spanner.Client, queries []queryCase) error {
+	var printed int
+	for _, query := range queries {
+		shapes := make([]optimizerVersionShape, 0, 8)
+		for version := 1; version <= 8; version++ {
+			versioned := queryCase{
+				Label:    fmt.Sprintf("%s/v%d", query.Label, version),
+				SQL:      withOptimizerVersionStatementHint(query.SQL, version),
+				PlanMode: query.PlanMode,
+			}
+			plan, err := analyzePlan(ctx, client, versioned)
+			shape := ""
+			if err != nil {
+				shape = "ERROR: " + err.Error()
+			} else {
+				shape = compactPlanTree(plan, true, false)
+			}
+			shapes = append(shapes, optimizerVersionShape{
+				version: version,
+				shape:   shape,
+			})
+		}
+		if !optimizerVersionShapesChanged(shapes) {
+			continue
+		}
+		if printed > 0 {
+			if err := writeln(stdout); err != nil {
+				return err
+			}
+		}
+		if err := printOptimizerVersionShapeDiff(stdout, query, shapes); err != nil {
+			return err
+		}
+		printed++
+	}
+	if printed == 0 {
+		return writeln(stdout, "no optimizer-version-sensitive query shapes found")
+	}
+	return nil
+}
+
+func optimizerVersionShapesChanged(shapes []optimizerVersionShape) bool {
+	if len(shapes) <= 1 {
+		return false
+	}
+	first := shapes[0].shape
+	for _, shape := range shapes[1:] {
+		if shape.shape != first {
+			return true
+		}
+	}
+	return false
+}
+
+func printOptimizerVersionShapeDiff(stdout io.Writer, query queryCase, shapes []optimizerVersionShape) error {
+	if err := writef(stdout, "=== %s ===\n", query.Label); err != nil {
+		return err
+	}
+	if err := writeln(stdout, strings.TrimSpace(query.SQL)); err != nil {
+		return err
+	}
+	for _, group := range groupOptimizerVersionShapes(shapes) {
+		if err := writef(stdout, "%s: %s\n", group.label, group.shape); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type optimizerVersionShapeGroup struct {
+	label string
+	shape string
+}
+
+func groupOptimizerVersionShapes(shapes []optimizerVersionShape) []optimizerVersionShapeGroup {
+	if len(shapes) == 0 {
+		return nil
+	}
+	var groups []optimizerVersionShapeGroup
+	start := shapes[0].version
+	prev := shapes[0]
+	for _, current := range shapes[1:] {
+		if current.shape == prev.shape && current.version == prev.version+1 {
+			prev = current
+			continue
+		}
+		groups = append(groups, optimizerVersionShapeGroup{
+			label: optimizerVersionRangeLabel(start, prev.version),
+			shape: prev.shape,
+		})
+		start = current.version
+		prev = current
+	}
+	groups = append(groups, optimizerVersionShapeGroup{
+		label: optimizerVersionRangeLabel(start, prev.version),
+		shape: prev.shape,
+	})
+	return groups
+}
+
+func optimizerVersionRangeLabel(start, end int) string {
+	if start == end {
+		return fmt.Sprintf("v%d", start)
+	}
+	return fmt.Sprintf("v%d-v%d", start, end)
 }
 
 func withOptimizerVersionStatementHint(sql string, version int) string {

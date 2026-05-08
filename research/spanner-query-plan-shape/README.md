@@ -22,6 +22,9 @@ stable CLI contract.
 - [`OPTIMIZER_VERSION_MATRIX_OBSERVATIONS.md`](OPTIMIZER_VERSION_MATRIX_OBSERVATIONS.md):
   optimizer-version and `ALLOW_DISTRIBUTED_MERGE` matrix observations, including
   dedicated CTE reference-count checks.
+- [`OPTIMIZER_VERSION_RENDERED_EXAMPLES.md`](OPTIMIZER_VERSION_RENDERED_EXAMPLES.md):
+  representative optimizer-version before/after examples rendered with
+  `spannerplan` reference output.
 - [`spanner-hacks-optimizer-version-feedback-ja.md`](spanner-hacks-optimizer-version-feedback-ja.md):
   candidate optimizer-version before/after examples for Spanner Unofficial
   Hacks, with `spannerplan` reference output.
