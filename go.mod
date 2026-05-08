@@ -17,6 +17,8 @@ require (
 	google.golang.org/protobuf v1.36.11
 )
 
+replace github.com/goccy/go-googlesql => github.com/goccy/go-googlesql v0.2.1-0.20260508123751-40ebe724bc50 // PR #4 googlesql-wasm-v0.1.5
+
 require (
 	cel.dev/expr v0.25.1 // indirect
 	cloud.google.com/go/auth v0.18.2 // indirect
