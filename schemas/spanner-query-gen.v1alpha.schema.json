@@ -1,0 +1,1021 @@
+{
+  "$defs": {
+    "catalog": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "project"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "bindings"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "kind": {
+                  "const": "spanner"
+                }
+              }
+            },
+            {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "proto_descriptors"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "kind": {
+                  "const": "bigquery"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "bindings": {
+          "additionalProperties": false,
+          "properties": {
+            "external_query_connections": {
+              "items": {
+                "$ref": "#/$defs/external_query_connection"
+              },
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            },
+            "spanner_external_datasets": {
+              "items": {
+                "$ref": "#/$defs/spanner_external_dataset"
+              },
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            }
+          },
+          "type": "object"
+        },
+        "ddl": {
+          "description": "DDL file path, resolved relative to the config file.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "dialect": {
+          "description": "Optional non-default SQL dialect spelling.",
+          "enum": [
+            "googlesql",
+            "postgresql"
+          ]
+        },
+        "kind": {
+          "description": "Catalog resource kind.",
+          "enum": [
+            "spanner",
+            "bigquery"
+          ]
+        },
+        "name": {
+          "$ref": "#/$defs/identifier"
+        },
+        "project": {
+          "description": "Default BigQuery project for this catalog.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "proto_descriptors": {
+          "description": "Protocol Buffers descriptor set paths for Spanner proto bundle analysis.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "emit": {
+      "additionalProperties": false,
+      "properties": {
+        "bigquery": {
+          "additionalProperties": false,
+          "properties": {
+            "row_loader": {
+              "description": "Emit BigQuery ValueLoader implementations.",
+              "type": "boolean"
+            },
+            "table_schema": {
+              "description": "Emit BigQuery TableSchema metadata helpers.",
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "spanner": {
+          "additionalProperties": false,
+          "properties": {
+            "dml": {
+              "description": "Emit Cloud Spanner DML statement helpers for compatible writes.",
+              "type": "boolean"
+            },
+            "mutations": {
+              "description": "Emit Cloud Spanner mutation helpers for compatible writes.",
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "external_query_connection": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "BigQuery connection ID, for example project.location.connection.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "$ref": "#/$defs/identifier"
+        },
+        "spanner_catalog": {
+          "$ref": "#/$defs/identifier"
+        }
+      },
+      "required": [
+        "name",
+        "id",
+        "spanner_catalog"
+      ],
+      "type": "object"
+    },
+    "go": {
+      "additionalProperties": false,
+      "properties": {
+        "out": {
+          "description": "Generated Go output path, resolved relative to the config file.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "package": {
+          "description": "Generated Go package name.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "package"
+      ],
+      "type": "object"
+    },
+    "identifier": {
+      "description": "v1alpha public identifier.",
+      "minLength": 1,
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+      "type": "string"
+    },
+    "query": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "table"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "index"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "binding"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "inner_sql"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "outer_sql"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "key_prefix"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "order_by"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "kind": {
+                  "const": "sql"
+                },
+                "params": {
+                  "items": {
+                    "allOf": [
+                      {
+                        "$ref": "#/$defs/query_param"
+                      },
+                      {
+                        "not": {
+                          "required": [
+                            "scope"
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  "minItems": 1,
+                  "type": "array",
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "sql"
+              ]
+            },
+            {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "sql"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "index"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "binding"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "inner_sql"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "outer_sql"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "key_prefix"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "kind": {
+                  "const": "table"
+                },
+                "params": {
+                  "items": {
+                    "allOf": [
+                      {
+                        "$ref": "#/$defs/query_param"
+                      },
+                      {
+                        "not": {
+                          "required": [
+                            "scope"
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  "minItems": 1,
+                  "type": "array",
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "table"
+              ]
+            },
+            {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "sql"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "table"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "binding"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "inner_sql"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "outer_sql"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "kind": {
+                  "const": "index"
+                },
+                "params": {
+                  "items": {
+                    "allOf": [
+                      {
+                        "$ref": "#/$defs/query_param"
+                      },
+                      {
+                        "not": {
+                          "required": [
+                            "scope"
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  "minItems": 1,
+                  "type": "array",
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "index"
+              ]
+            },
+            {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "sql"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "table"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "index"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "key_prefix"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "order_by"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "kind": {
+                  "const": "external_query"
+                }
+              },
+              "required": [
+                "binding",
+                "inner_sql"
+              ]
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "binding": {
+          "$ref": "#/$defs/identifier"
+        },
+        "catalog": {
+          "$ref": "#/$defs/identifier"
+        },
+        "index": {
+          "description": "Spanner index shorthand for kind: index.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "inner_sql": {
+          "description": "Spanner SQL analyzed inside EXTERNAL_QUERY.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "key_prefix": {
+          "description": "Index key columns used as query parameters from the leading key prefix.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "kind": {
+          "description": "Query declaration kind.",
+          "enum": [
+            "sql",
+            "table",
+            "index",
+            "external_query"
+          ]
+        },
+        "name": {
+          "$ref": "#/$defs/identifier"
+        },
+        "order_by": {
+          "description": "Ordering for generated table/index SQL. Omit for deterministic key ordering; use none to avoid ORDER BY.",
+          "enum": [
+            "key",
+            "none"
+          ]
+        },
+        "outer_sql": {
+          "description": "Optional BigQuery wrapper SQL containing exactly one __external__ placeholder.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "params": {
+          "items": {
+            "$ref": "#/$defs/query_param"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "result": {
+          "$ref": "#/$defs/query_result"
+        },
+        "sql": {
+          "description": "SQL text for kind: sql.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "table": {
+          "description": "Table shorthand for kind: table.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "catalog",
+        "kind",
+        "result"
+      ],
+      "type": "object"
+    },
+    "query_param": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "GoogleSQL parameter name without the leading @.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "scope": {
+          "description": "Optional external_query parameter scope. Omit for regular queries.",
+          "enum": [
+            "inner",
+            "outer"
+          ]
+        },
+        "type": {
+          "description": "GoogleSQL parameter type used when analyzer inference needs explicit input.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "type": "object"
+    },
+    "query_result": {
+      "additionalProperties": false,
+      "properties": {
+        "cardinality": {
+          "description": "Row-returning query result cardinality. Defaults to many.",
+          "enum": [
+            "one",
+            "maybe_one",
+            "many"
+          ]
+        },
+        "required": {
+          "additionalProperties": false,
+          "properties": {
+            "fields": {
+              "description": "Result fields required by user override.",
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            },
+            "policy": {
+              "description": "Requiredness override policy.",
+              "enum": [
+                "override",
+                "strict"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "struct": {
+          "description": "Generated or shared result struct name.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "struct"
+      ],
+      "type": "object"
+    },
+    "rule_suppression": {
+      "additionalProperties": false,
+      "properties": {
+        "expires": {
+          "description": "Optional YYYY-MM-DD suppression expiry date.",
+          "format": "date",
+          "minLength": 1,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string"
+        },
+        "owner": {
+          "description": "Optional suppression owner.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "description": "Required reviewable suppression reason.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "rule": {
+          "description": "Diagnostic rule ID.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "scope": {
+          "description": "Suppression scope, such as query/Name or catalog-binding/catalog.binding.",
+          "minLength": 1,
+          "pattern": "^(query|write|catalog-binding)/.+",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scope",
+        "rule",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "rules": {
+      "additionalProperties": false,
+      "properties": {
+        "suppressions": {
+          "items": {
+            "$ref": "#/$defs/rule_suppression"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "type": "object"
+    },
+    "spanner_external_dataset": {
+      "additionalProperties": false,
+      "properties": {
+        "access": {
+          "additionalProperties": false,
+          "properties": {
+            "cloud_resource_connection_id": {
+              "description": "Cloud resource connection ID used by the external dataset.",
+              "minLength": 1,
+              "type": "string"
+            },
+            "verification_evidence": {
+              "$ref": "#/$defs/verification_evidence"
+            }
+          },
+          "type": "object"
+        },
+        "dataset": {
+          "description": "BigQuery dataset name exposed by the external dataset.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "location": {
+          "description": "Optional BigQuery dataset location.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "$ref": "#/$defs/identifier"
+        },
+        "projection": {
+          "additionalProperties": false,
+          "properties": {
+            "named_schema_tables": {
+              "description": "How named-schema Spanner tables are handled.",
+              "enum": [
+                "reject",
+                "warn_and_omit"
+              ]
+            },
+            "unsupported_columns": {
+              "description": "How unsupported Spanner columns are handled.",
+              "enum": [
+                "reject",
+                "omit"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "spanner_catalog": {
+          "$ref": "#/$defs/identifier"
+        },
+        "spanner_database_uri": {
+          "description": "Optional Spanner external source URI; database roles are inferred into the plan.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "dataset",
+        "spanner_catalog"
+      ],
+      "type": "object"
+    },
+    "verification_evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "checked_at": {
+          "description": "RFC3339 timestamp for real external evidence.",
+          "format": "date-time",
+          "minLength": 1,
+          "type": "string"
+        },
+        "status": {
+          "description": "External verification status.",
+          "enum": [
+            "verified",
+            "mismatch",
+            "failed"
+          ]
+        },
+        "verifier": {
+          "description": "Verifier name, such as terraform-plan.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "verifier",
+        "checked_at"
+      ],
+      "type": "object"
+    },
+    "write": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "update"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "insert": {
+                  "required": [
+                    "columns"
+                  ]
+                },
+                "operation": {
+                  "const": "insert"
+                }
+              },
+              "required": [
+                "insert"
+              ]
+            },
+            {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "insert"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "operation": {
+                  "const": "update"
+                },
+                "update": {
+                  "oneOf": [
+                    {
+                      "required": [
+                        "columns"
+                      ]
+                    },
+                    {
+                      "properties": {
+                        "all_non_key_columns": {
+                          "const": true
+                        }
+                      },
+                      "required": [
+                        "all_non_key_columns"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "update"
+              ]
+            },
+            {
+              "properties": {
+                "insert": {
+                  "required": [
+                    "columns"
+                  ]
+                },
+                "operation": {
+                  "const": "upsert"
+                },
+                "update": {
+                  "not": {
+                    "required": [
+                      "all_non_key_columns"
+                    ]
+                  },
+                  "required": [
+                    "columns"
+                  ]
+                }
+              },
+              "required": [
+                "insert",
+                "update"
+              ]
+            },
+            {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "update"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "insert": {
+                  "required": [
+                    "columns"
+                  ]
+                },
+                "operation": {
+                  "const": "replace"
+                }
+              },
+              "required": [
+                "insert"
+              ]
+            },
+            {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "insert"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "update"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "operation": {
+                  "const": "delete"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "catalog": {
+          "$ref": "#/$defs/identifier"
+        },
+        "input": {
+          "description": "Input struct name.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "insert": {
+          "additionalProperties": false,
+          "properties": {
+            "columns": {
+              "description": "Insert branch columns.",
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            }
+          },
+          "type": "object"
+        },
+        "key": {
+          "description": "Table primary key columns used by update/delete/upsert helpers; omit to infer from DDL.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "name": {
+          "$ref": "#/$defs/identifier"
+        },
+        "operation": {
+          "description": "Write operation.",
+          "enum": [
+            "insert",
+            "update",
+            "upsert",
+            "replace",
+            "delete"
+          ]
+        },
+        "table": {
+          "description": "Spanner table name.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "update": {
+          "additionalProperties": false,
+          "properties": {
+            "all_non_key_columns": {
+              "const": true,
+              "description": "Explicit opt-in to update every non-key column."
+            },
+            "columns": {
+              "description": "Update mask columns.",
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "catalog",
+        "table",
+        "operation",
+        "input"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/apstndb/go-googlesql-spanner-poc/schemas/spanner-query-gen.v1alpha.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "anyOf": [
+    {
+      "required": [
+        "queries"
+      ]
+    },
+    {
+      "required": [
+        "writes"
+      ]
+    }
+  ],
+  "properties": {
+    "catalogs": {
+      "items": {
+        "$ref": "#/$defs/catalog"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "emit": {
+      "$ref": "#/$defs/emit"
+    },
+    "go": {
+      "$ref": "#/$defs/go"
+    },
+    "queries": {
+      "items": {
+        "$ref": "#/$defs/query"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "rules": {
+      "$ref": "#/$defs/rules"
+    },
+    "version": {
+      "const": "v1alpha",
+      "description": "Mutable pre-v1 preview config version."
+    },
+    "writes": {
+      "items": {
+        "$ref": "#/$defs/write"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "version",
+    "go",
+    "catalogs"
+  ],
+  "title": "spanner-query-gen v1alpha config",
+  "type": "object"
+}

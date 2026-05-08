@@ -1,0 +1,33 @@
+{
+  "plan": {
+    "planNodes": [
+      {
+        "index": 1,
+        "displayName": "Hash Join",
+        "childLinks": [
+          {
+            "type": "Build",
+            "childIndex": 2
+          },
+          {
+            "type": "Probe",
+            "childIndex": 3
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "displayName": "Scan"
+      },
+      {
+        "index": 3,
+        "displayName": "Scan"
+      }
+    ]
+  },
+  "want_families": {
+    "1": "hash_join",
+    "2": "scan",
+    "3": "scan"
+  }
+}

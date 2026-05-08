@@ -17,7 +17,7 @@ func (c *GoogleSQLCatalog) addModels() error {
 		if err != nil {
 			return fmt.Errorf("model %s: %w", model.Name, err)
 		}
-		if err := c.SimpleCatalog.AddModel(gsModel); err != nil {
+		if err := c.SimpleCatalog.AddOwnedModel(gsModel); err != nil {
 			return fmt.Errorf("model %s: %w", model.Name, err)
 		}
 	}

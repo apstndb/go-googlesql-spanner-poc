@@ -25,7 +25,7 @@ go run ./cmd/spanner-analyzer \
   --sql 'SELECT OrderInfo.order_number FROM Orders'
 ```
 
-Output:
+Output excerpt:
 
 ```yaml
 fields:
@@ -56,6 +56,14 @@ go run ./cmd/spanner-function-catalog
 Use `--verbose=false` to print only function names. `--ddl` and
 `--proto-descriptors-file` are also accepted when the catalog depends on schema
 objects or proto descriptors.
+
+Developer-only probes live under `tools/`. For example,
+[`tools/spanner-query-plan-shape`](tools/spanner-query-plan-shape) starts
+Spanner Omni through [`spanemuboost`](https://github.com/apstndb/spanemuboost)
+and prints raw query plan node shapes for plan normalization work.
+Long-form investigation notes and review archives live under
+[`research/`](research/); they are non-normative supporting material rather than
+the public CLI contract.
 
 The repository includes the Protocol Buffers example from the
 [Cloud Spanner protocol buffers reference](https://cloud.google.com/spanner/docs/reference/standard-sql/protocol-buffers)
@@ -240,6 +248,83 @@ Output:
 }
 ```
 
+`--mode=go_struct` emits Go code for a struct that can receive query result
+rows. Use `--go-client=bigquery`, `--go-client=spanner`, or
+`--go-client=both` to choose struct tags and field types. The default is
+`both`, which emits both `bigquery` and `spanner` tags. In `both` mode the
+generator keeps one field per result column and emits a small `NullValue[T]`
+helper so the same DTO can be loaded from BigQuery with `bigquery.ValueLoader`
+and from Spanner with `spanner.Decoder`.
+
+```sh
+go run ./cmd/spanner-analyzer \
+  --mode go_struct \
+  --sql 'SELECT 1 AS n'
+```
+
+Output excerpt:
+
+```go
+package main
+
+import (
+	"cloud.google.com/go/bigquery"
+	"fmt"
+)
+
+type QueryRow struct {
+	N NullValue[int64] `bigquery:"n" spanner:"n"`
+}
+
+func (r *QueryRow) Load(values []bigquery.Value, schema bigquery.Schema) error {
+	if len(values) != len(schema) {
+		return fmt.Errorf("bigquery row has %d values for %d schema fields", len(values), len(schema))
+	}
+	for i, field := range schema {
+		switch field.Name {
+		case "n":
+			if err := r.N.LoadBigQuery(values[i]); err != nil {
+				return fmt.Errorf("n: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+type NullValue[T any] struct {
+	Value T
+	Valid bool
+}
+
+func (n NullValue[T]) IsNull() bool {
+	return !n.Valid
+}
+
+func (n *NullValue[T]) LoadBigQuery(value bigquery.Value) error {
+	return n.set(value)
+}
+
+func (n *NullValue[T]) DecodeSpanner(input interface{}) error {
+	return n.set(input)
+}
+
+func (n *NullValue[T]) set(value interface{}) error {
+	if value == nil {
+		var zero T
+		n.Value = zero
+		n.Valid = false
+		return nil
+	}
+	typed, ok := value.(T)
+	if !ok {
+		return fmt.Errorf("cannot decode %T", value)
+	}
+	n.Value = typed
+	n.Valid = true
+	return nil
+}
+```
+
 BigQuery mode is also available. It analyzes BigQuery GoogleSQL queries against
 [BigQuery DDL](https://cloud.google.com/bigquery/docs/reference/standard-sql/data-definition-language)
 and emits a BigQuery REST
@@ -363,9 +448,9 @@ query mode, or a single Cloud Spanner type for expression mode. With
 `--dialect=bigquery`, the default `--mode=bigquery_type` returns a BigQuery
 `TableSchema` shaped schema. `--mode=parse` prints the parser AST,
 `--mode=analyze` prints the resolved AST debug string like GoogleSQL
-`execute_query` analyze mode, and `--mode=unparse` prints parser AST converted
-back to SQL. Modes can be comma-separated, for example
-`--mode=parse,analyze,spanner_type`.
+`execute_query` analyze mode, `--mode=unparse` prints parser AST converted
+back to SQL, and `--mode=go_struct` prints Go result struct code. Modes can be
+comma-separated, for example `--mode=parse,analyze,spanner_type`.
 
 GoogleSQL is initialized with
 [wazero](https://github.com/tetratelabs/wazero) compiler mode and an on-disk
@@ -433,27 +518,26 @@ artifacts.
 - Cloud Spanner and the
   [Cloud Spanner emulator](https://github.com/GoogleCloudPlatform/cloud-spanner-emulator)
   use the GoogleSQL frontend's native `MakeProtoType` and `MakeEnumType` APIs
-  with descriptors from the active proto bundle. The current Go binding used by
-  this project does not expose public equivalents, so proto values are
-  represented internally as STRUCT shadows and enum values as INT64 shadows
-  during query analysis.
+  with descriptors from the active proto bundle. `go-googlesql` v0.2.0 exposes
+  those constructors, but this project still uses STRUCT and INT64 shadows
+  because the binding does not yet expose a documented way to load external
+  descriptor set bytes into the WASM-side descriptor pool.
 - Direct top-level proto or enum column outputs are mapped back to Spanner row
   metadata when possible, but nested proto-derived expressions may reflect the
   internal shadow representation instead of native Spanner `PROTO` or `ENUM`
   types.
-- Property graph DDL is parsed and graph names are registered in the GoogleSQL
-  catalog, but GQL query analysis cannot yet expose node or edge properties.
-  [`github.com/goccy/go-googlesql`](https://github.com/goccy/go-googlesql)
-  v0.1.0 has graph catalog types, but does not expose public constructors or
-  usable callbacks for building graph node and edge table metadata from Go.
+- Property graph DDL registers node and edge tables, labels, and direct column
+  property definitions through the `go-googlesql` v0.2.0 `SimpleGraph*`
+  constructors. More advanced Spanner graph metadata, including arbitrary
+  property expressions and dynamic labels/properties, is still limited.
 - Some Spanner-specific functions are registered locally because they are not
-  included in the default `go-googlesql` v0.1.0 builtin function set. This
+  included in the default `go-googlesql` builtin function set. This
   includes commit timestamp, sequence, search, TOKENLIST, and AI helper
   functions needed for query analysis.
 - `ML.PREDICT` is not supported yet. It is a table-valued function whose output
-  schema depends on the referenced model and input relation; `go-googlesql`
-  v0.1.0 exposes table-valued function catalog types, but not a Go callback
-  path for implementing Spanner's dynamic `Resolve` behavior.
+  schema depends on the referenced model and input relation. `go-googlesql`
+  v0.2.0 exposes table-valued function callbacks, but this project has not yet
+  modeled Spanner's dynamic `Resolve` behavior.
 - `TOKENLIST` is supported as an internal analysis type for search expressions,
   but Cloud Spanner result sets cannot return `TOKENLIST`, so the Cloud Spanner
   protobuf API has no `TypeCode` for it.

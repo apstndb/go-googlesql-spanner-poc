@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	spanalyzer "github.com/apstndb/go-googlesql-spanner-poc"
+	"github.com/apstndb/go-googlesql-spanner-poc/internal/querygen"
 	googlesql "github.com/goccy/go-googlesql"
 	"github.com/goccy/go-yaml"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -19,9 +20,12 @@ func main() {
 	ddlPath := flag.String("ddl", "", "optional path to a dialect-specific GoogleSQL DDL file")
 	sql := flag.String("sql", "", "SQL query or expression to analyze")
 	dialect := flag.String("dialect", "spanner", "SQL dialect/catalog mode: spanner or bigquery")
-	mode := flag.String("mode", "", "comma-separated modes: spanner_type, bigquery_type, parse, analyze, unparse")
+	mode := flag.String("mode", "", "comma-separated modes: spanner_type, bigquery_type, go_struct, parse, analyze, unparse")
 	sqlMode := flag.String("sql-mode", "query", "how to interpret --sql: query or expression")
-	output := flag.String("output", defaultOutputFormat, "output format: yaml, json, or textproto")
+	output := flag.String("output", defaultOutputFormat, "output format: yaml, json, or textproto where supported")
+	goPackage := flag.String("go-package", "main", "package name for --mode=go_struct")
+	goStruct := flag.String("go-struct", "QueryRow", "struct type name for --mode=go_struct")
+	goClient := flag.String("go-client", "both", "Go client target for --mode=go_struct: bigquery, spanner, or both")
 	productMode := flag.String("product-mode", "external", "GoogleSQL product mode: internal or external")
 	strictNameResolution := flag.Bool("strict-name-resolution", false, "enable strict name resolution")
 	foldLiteralCast := flag.Bool("fold-literal-cast", true, "set AnalyzerOptions fold_literal_cast")
@@ -57,6 +61,10 @@ func main() {
 	if err != nil {
 		exitErr(err)
 	}
+	goStructOptions, err := goStructOptionsFromFlags(*goPackage, *goStruct, *goClient)
+	if err != nil {
+		exitErr(err)
+	}
 	result, err := runDialect(
 		strings.ToLower(*dialect),
 		ddlPathForAnalyzer,
@@ -70,6 +78,7 @@ func main() {
 		params,
 		positionalParams,
 		options,
+		goStructOptions,
 	)
 	if err != nil {
 		exitErr(err)
@@ -100,7 +109,7 @@ type externalSchema struct {
 	ProtoDescriptorFiles []string
 }
 
-func runDialect(dialect, ddlPath, ddl, sql string, modes []string, sqlMode, output string, externalSchemas map[string]externalSchema, protoDescriptorFiles, params, positionalParams []string, options []spanalyzer.AnalyzerOption) (string, error) {
+func runDialect(dialect, ddlPath, ddl, sql string, modes []string, sqlMode, output string, externalSchemas map[string]externalSchema, protoDescriptorFiles, params, positionalParams []string, options []spanalyzer.AnalyzerOption, goStructOptions querygen.GoStructOptions) (string, error) {
 	switch dialect {
 	case "spanner":
 		if len(externalSchemas) > 0 {
@@ -113,7 +122,7 @@ func runDialect(dialect, ddlPath, ddl, sql string, modes []string, sqlMode, outp
 		if err := addQueryParameters(analyzer, params, positionalParams); err != nil {
 			return "", err
 		}
-		return runModes(analyzer, modes, sqlMode, sql, output)
+		return runModes(analyzer, modes, sqlMode, sql, output, goStructOptions)
 	case "bigquery":
 		if len(params) > 0 || len(positionalParams) > 0 {
 			return "", fmt.Errorf("--param and --positional-param are not supported with --dialect=bigquery yet")
@@ -130,7 +139,7 @@ func runDialect(dialect, ddlPath, ddl, sql string, modes []string, sqlMode, outp
 			return "", err
 		}
 		analyzer.SetExternalQueryAnalyzers(externalAnalyzers)
-		return runBigQueryModes(analyzer, modes, sqlMode, sql, output)
+		return runBigQueryModes(analyzer, modes, sqlMode, sql, output, goStructOptions)
 	default:
 		return "", fmt.Errorf("unsupported --dialect %q", dialect)
 	}
@@ -232,13 +241,13 @@ func marshalJSONYAML(value any, output string) ([]byte, error) {
 	}
 }
 
-func runModes(analyzer *spanalyzer.Analyzer, modes []string, sqlMode, sql, output string) (string, error) {
+func runModes(analyzer *spanalyzer.Analyzer, modes []string, sqlMode, sql, output string, goStructOptions querygen.GoStructOptions) (string, error) {
 	if len(modes) == 0 {
 		modes = []string{"spanner_type"}
 	}
 	sections := make([]modeResult, 0, len(modes))
 	for _, mode := range modes {
-		body, err := runMode(analyzer, mode, sqlMode, sql, output)
+		body, err := runMode(analyzer, mode, sqlMode, sql, output, goStructOptions)
 		if err != nil {
 			return "", err
 		}
@@ -263,13 +272,13 @@ func runModes(analyzer *spanalyzer.Analyzer, modes []string, sqlMode, sql, outpu
 	return b.String(), nil
 }
 
-func runBigQueryModes(analyzer *spanalyzer.BigQueryAnalyzer, modes []string, sqlMode, sql, output string) (string, error) {
+func runBigQueryModes(analyzer *spanalyzer.BigQueryAnalyzer, modes []string, sqlMode, sql, output string, goStructOptions querygen.GoStructOptions) (string, error) {
 	if len(modes) == 0 {
 		modes = []string{"bigquery_type"}
 	}
 	sections := make([]modeResult, 0, len(modes))
 	for _, mode := range modes {
-		body, err := runBigQueryMode(analyzer, mode, sqlMode, sql, output)
+		body, err := runBigQueryMode(analyzer, mode, sqlMode, sql, output, goStructOptions)
 		if err != nil {
 			return "", err
 		}
@@ -299,7 +308,7 @@ type modeResult struct {
 	body string
 }
 
-func runMode(analyzer *spanalyzer.Analyzer, mode, sqlMode, sql, output string) (string, error) {
+func runMode(analyzer *spanalyzer.Analyzer, mode, sqlMode, sql, output string, goStructOptions querygen.GoStructOptions) (string, error) {
 	switch mode {
 	case "spanner_type", "rowtype":
 		message, err := spannerTypeProtoForSQLMode(analyzer, sqlMode, sql)
@@ -311,6 +320,15 @@ func runMode(analyzer *spanalyzer.Analyzer, mode, sqlMode, sql, output string) (
 			return "", err
 		}
 		return string(out) + "\n", nil
+	case "go_struct":
+		if sqlMode != "query" {
+			return "", fmt.Errorf("--mode=go_struct requires --sql-mode=query")
+		}
+		rowType, err := analyzer.RowTypeForStatement(sql)
+		if err != nil {
+			return "", err
+		}
+		return querygen.GenerateGoStructFromSpannerStructType(rowType, goStructOptions)
 	case "parse":
 		return analyzer.ParseDebugString(sqlMode, sql)
 	case "unparse":
@@ -326,7 +344,7 @@ func runMode(analyzer *spanalyzer.Analyzer, mode, sqlMode, sql, output string) (
 	}
 }
 
-func runBigQueryMode(analyzer *spanalyzer.BigQueryAnalyzer, mode, sqlMode, sql, output string) (string, error) {
+func runBigQueryMode(analyzer *spanalyzer.BigQueryAnalyzer, mode, sqlMode, sql, output string, goStructOptions querygen.GoStructOptions) (string, error) {
 	switch mode {
 	case "bigquery_type":
 		schema, err := bigQueryTableSchemaForSQLMode(analyzer, sqlMode, sql)
@@ -338,6 +356,15 @@ func runBigQueryMode(analyzer *spanalyzer.BigQueryAnalyzer, mode, sqlMode, sql, 
 			return "", err
 		}
 		return string(out) + "\n", nil
+	case "go_struct":
+		if sqlMode != "query" {
+			return "", fmt.Errorf("--mode=go_struct requires --sql-mode=query")
+		}
+		schema, err := analyzer.TableSchemaForStatement(sql)
+		if err != nil {
+			return "", err
+		}
+		return querygen.GenerateGoStructFromBigQueryTableSchema(schema, goStructOptions)
 	case "parse":
 		return analyzer.ParseDebugString(sqlMode, sql)
 	case "unparse":
@@ -407,6 +434,31 @@ func analyzerOptionsFromFlags(productMode string, strictNameResolution, foldLite
 	}
 	options = append(options, spanalyzer.WithParseLocationRecordType(recordType))
 	return options, nil
+}
+
+func goStructOptionsFromFlags(packageName, structName, client string) (querygen.GoStructOptions, error) {
+	target, err := parseGoStructTarget(client)
+	if err != nil {
+		return querygen.GoStructOptions{}, err
+	}
+	return querygen.GoStructOptions{
+		PackageName: packageName,
+		StructName:  structName,
+		Target:      target,
+	}, nil
+}
+
+func parseGoStructTarget(value string) (querygen.GoStructTarget, error) {
+	switch strings.ToLower(value) {
+	case "bigquery":
+		return querygen.GoStructTargetBigQuery, nil
+	case "spanner":
+		return querygen.GoStructTargetSpanner, nil
+	case "both":
+		return querygen.GoStructTargetBoth, nil
+	default:
+		return "", fmt.Errorf("unsupported --go-client %q", value)
+	}
 }
 
 func parseProductMode(value string) (googlesql.ProductMode, error) {

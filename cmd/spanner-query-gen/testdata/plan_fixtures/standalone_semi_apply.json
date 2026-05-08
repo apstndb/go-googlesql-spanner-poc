@@ -1,0 +1,18 @@
+{
+  "plan": {
+    "planNodes": [
+      {
+        "index": 1,
+        "displayName": "Semi Apply"
+      },
+      {
+        "index": 2,
+        "displayName": "Anti-Semi Apply"
+      }
+    ]
+  },
+  "want_families": {
+    "1": "semi_apply",
+    "2": "anti_semi_apply"
+  }
+}

@@ -1,0 +1,20 @@
+version: v1alpha
+
+go:
+  package: querydemo
+  out: querydemo.sql.go
+
+catalogs:
+- name: app
+  kind: spanner
+
+queries:
+- name: GetLiteral
+  catalog: app
+  kind: sql
+  sql: SELECT 1 AS value
+  result:
+    struct: LiteralRow
+    required:
+      fields:
+      - value

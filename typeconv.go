@@ -65,9 +65,10 @@ func typeSpecToGoogleSQLTypeWithProto(tf *googlesql.TypeFactory, spec *TypeSpec,
 		}
 		return typeSpecToGoogleSQLTypeWithProto(tf, shadow, catalog)
 	case spannerpb.TypeCode_ENUM:
-		// go-googlesql v0.1.0 does not expose enum type construction. INT64
-		// keeps expressions analyzable; direct enum column outputs are mapped
-		// back to Spanner ENUM row metadata after analysis.
+		// go-googlesql v0.2.0 exposes enum type construction, but descriptor set
+		// bytes cannot yet be loaded into its WASM-side descriptor pool here.
+		// INT64 keeps expressions analyzable; direct enum column outputs are
+		// mapped back to Spanner ENUM row metadata after analysis.
 		return tf.GetInt64()
 	default:
 		return nil, fmt.Errorf("unsupported Spanner type code %s", spec.Code)

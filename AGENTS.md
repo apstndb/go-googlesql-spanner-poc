@@ -16,7 +16,9 @@ ZetaSQL, and "Spanner GoogleSQL" for Cloud Spanner's SQL dialect. Mention
 ZetaSQL only for historical upstream API, repository, or symbol names.
 
 The CLI entry point is `cmd/spanner-analyzer/main.go`. Core catalog and analyzer
-code lives in the root package.
+code lives in the root package. `spanner-query-gen`-specific config, planning,
+and DTO rendering code lives in `internal/querygen`; keep generator-only
+dependencies out of the root package.
 
 ## Essential Commands
 
@@ -43,16 +45,21 @@ complete.
   a GoogleSQL catalog.
 - Result conversion from GoogleSQL analyzer output to Spanner protobuf metadata
   lives in `resultconv.go`; keep it separate from catalog construction.
+- Query generation and Go DTO rendering for `cmd/spanner-query-gen` live in
+  `internal/querygen`; root package additions should stay focused on reusable
+  analyzer/catalog/type-conversion APIs.
 - Regular indexes and vector indexes are intentionally ignored because they do
   not affect logical query result row types.
-- Property graph support currently records graph IR and registers graph names,
-  but does not fully model graph node and edge table metadata in GoogleSQL.
+- Property graph support registers graph node and edge tables, labels, and
+  direct column property definitions in GoogleSQL. More advanced graph
+  metadata, including arbitrary property expressions and dynamic
+  labels/properties, remains limited.
 - Proto bundle support follows Spanner's input shape: DDL names active proto
   bundle types, while descriptor set files provide Protocol Buffers metadata.
-  `go-googlesql v0.1.0` does not currently expose public `MakeProtoType` or
-  `MakeEnumType` bindings, so nested proto field analysis uses a STRUCT shadow
-  representation internally. Direct top-level proto column outputs are mapped
-  back to Spanner `PROTO` row metadata.
+  `go-googlesql v0.2.0` exposes `MakeProtoType` and `MakeEnumType`, but this
+  project still uses STRUCT and INT64 shadows until descriptor set bytes can be
+  loaded into the WASM-side descriptor pool. Direct top-level proto column
+  outputs are mapped back to Spanner `PROTO` row metadata.
 
 ## Testing Guidelines
 
@@ -60,6 +67,8 @@ Keep tests close to the code under test:
 
 - DDL catalog behavior: `catalog_test.go`
 - GoogleSQL analyzer behavior: `analyzer_googlesql_test.go`
+- Query generator behavior: `internal/querygen/*_test.go`
+- Query generator CLI and integration behavior: `cmd/spanner-query-gen/*_test.go`
 
 Prefer focused regression tests using small inline DDL. For proto tests, use
 the descriptor fixture at:

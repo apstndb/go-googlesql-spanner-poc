@@ -1,0 +1,187 @@
+{
+  "$defs": {
+    "contract": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "use"
+          ]
+        },
+        {
+          "required": [
+            "forbid"
+          ]
+        },
+        {
+          "required": [
+            "cel"
+          ]
+        }
+      ],
+      "properties": {
+        "cel": {
+          "description": "CEL expression evaluated against the plan-report contract input.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "forbid": {
+          "items": {
+            "$ref": "#/$defs/forbid"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "name": {
+          "$ref": "#/$defs/identifier"
+        },
+        "target": {
+          "$ref": "#/$defs/target"
+        },
+        "use": {
+          "items": {
+            "description": "Predefined plan contract name.",
+            "enum": [
+              "no_explicit_sort",
+              "no_full_sort",
+              "no_minor_sort",
+              "no_hash_join",
+              "no_standalone_hash_join",
+              "no_push_broadcast_hash_join",
+              "no_apply_join",
+              "no_standalone_apply_join",
+              "no_distributed_cross_apply",
+              "no_merge_join",
+              "no_hash_aggregate",
+              "no_stream_aggregate",
+              "no_blocking_operator_under_limit"
+            ]
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "name",
+        "target"
+      ],
+      "type": "object"
+    },
+    "forbid": {
+      "additionalProperties": false,
+      "properties": {
+        "max_count": {
+          "default": 0,
+          "description": "Maximum allowed count; omitted means 0.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "operator_family": {
+          "$ref": "#/$defs/operator_family"
+        }
+      },
+      "required": [
+        "operator_family"
+      ],
+      "type": "object"
+    },
+    "identifier": {
+      "description": "Identifier used in canonical target IDs.",
+      "minLength": 1,
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+      "type": "string"
+    },
+    "operator_family": {
+      "description": "Normalized operator family.",
+      "enum": [
+        "aggregate",
+        "anti_semi_apply",
+        "apply_mutations",
+        "array_subquery",
+        "array_unnest",
+        "bloom_filter_build",
+        "blocking_operator",
+        "change_stream_tvf",
+        "compute",
+        "compute_struct",
+        "create_batch",
+        "data_block_to_row",
+        "apply_join",
+        "distributed_anti_semi_apply",
+        "distributed_anti_semi_apply_internal_apply",
+        "distributed_merge_union",
+        "distributed_cross_apply",
+        "distributed_cross_apply_internal_apply",
+        "distributed_semi_apply",
+        "distributed_semi_apply_internal_apply",
+        "distributed_union",
+        "empty_relation",
+        "explicit_sort",
+        "filter",
+        "filter_scan",
+        "full_sort",
+        "hash_aggregate",
+        "hash_join",
+        "join",
+        "key_range_accumulator",
+        "limit",
+        "merge_join",
+        "mini_batch_assign",
+        "mini_batch_key_order",
+        "minor_sort",
+        "push_broadcast_hash_join",
+        "push_broadcast_hash_join_internal_hash_join",
+        "recursive_spool_scan",
+        "random_id_assign",
+        "recursive_union",
+        "row_count",
+        "row_to_data_block",
+        "scan",
+        "scalar_subquery",
+        "search_predicate",
+        "search_query_conversion_tvf",
+        "serialize_result",
+        "semi_apply",
+        "spool_build",
+        "spool_scan",
+        "stream_aggregate",
+        "union_all",
+        "union_input",
+        "unit_relation",
+        "verify_determinism",
+        "unknown"
+      ]
+    },
+    "target": {
+      "description": "Canonical target ID, for example query/ListSingers or query/ExternalQuery#inner.",
+      "minLength": 1,
+      "pattern": "^query/[A-Za-z_][A-Za-z0-9_]*(#inner)?$",
+      "type": "string"
+    }
+  },
+  "$id": "https://github.com/apstndb/go-googlesql-spanner-poc/schemas/spanner-query-gen.plan-contracts.v1alpha.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "contracts": {
+      "items": {
+        "$ref": "#/$defs/contract"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "version": {
+      "const": "v1alpha-plan-contracts",
+      "description": "Plan contract file version."
+    }
+  },
+  "required": [
+    "version",
+    "contracts"
+  ],
+  "title": "spanner-query-gen plan contracts v1alpha",
+  "type": "object"
+}

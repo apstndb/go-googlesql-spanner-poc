@@ -337,7 +337,7 @@ func (c *GoogleSQLCatalog) addScalarFunctionAtPath(namePath []string, resultType
 	if err != nil {
 		return fmt.Errorf("function %s: %w", name, err)
 	}
-	if err := c.SimpleCatalog.AddFunction(fn); err != nil {
+	if err := c.SimpleCatalog.AddOwnedFunction(fn); err != nil {
 		return err
 	}
 	if len(namePath) > 1 {
@@ -347,7 +347,7 @@ func (c *GoogleSQLCatalog) addScalarFunctionAtPath(namePath []string, resultType
 			if err != nil {
 				return fmt.Errorf("function %s: %w", name, err)
 			}
-			if err := catalog.AddFunction(leafFn); err != nil {
+			if err := catalog.AddOwnedFunction(leafFn); err != nil {
 				return err
 			}
 		}

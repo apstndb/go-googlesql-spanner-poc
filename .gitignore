@@ -1,1 +1,14 @@
 /spanner-analyzer
+
+# macOS and IDE local state.
+.DS_Store
+.idea/
+
+# Local scratch dumps.
+/fa.yaml
+/true.yaml
+
+# Upstream feedback drafts, not durable project documentation.
+/research/spanner-query-plan-shape/spanner-hacks-operators-feedback-ja.md
+/research/spanner-query-plan-shape/spanner-hacks-operators-feedback/
+/research/spanner-query-gen/reviews/

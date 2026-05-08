@@ -75,6 +75,9 @@ func graphElementFromAST(elem *ast.PropertyGraphElement) (*GraphElement, error) 
 	}
 	out.Labels = labels
 	out.PropertiesSQL = propertiesSQL
+	if len(labels) == 1 && labels[0].Default && labels[0].Name == "" {
+		out.Properties = labels[0].Properties
+	}
 	if elem.DynamicLabel != nil {
 		out.DynamicLabel = elem.DynamicLabel.ColumnName.Name
 	}
@@ -111,7 +114,8 @@ func graphLabelsAndProperties(node ast.PropertyGraphLabelsOrProperties) ([]*Grap
 	case nil:
 		return nil, "", nil
 	case *ast.PropertyGraphSingleProperties:
-		return nil, graphPropertiesSQL(node.Properties), nil
+		props, sql := graphPropertiesFromAST(node.Properties)
+		return []*GraphLabelProperties{{Default: true, Properties: props, PropertiesSQL: sql}}, sql, nil
 	case *ast.PropertyGraphLabelAndPropertiesList:
 		labels := make([]*GraphLabelProperties, 0, len(node.LabelAndProperties))
 		for _, item := range node.LabelAndProperties {
@@ -128,7 +132,8 @@ func graphLabelsAndProperties(node ast.PropertyGraphLabelsOrProperties) ([]*Grap
 }
 
 func graphLabelProperties(node *ast.PropertyGraphLabelAndProperties) (*GraphLabelProperties, error) {
-	label := &GraphLabelProperties{PropertiesSQL: graphPropertiesSQL(node.Properties)}
+	props, sql := graphPropertiesFromAST(node.Properties)
+	label := &GraphLabelProperties{Properties: props, PropertiesSQL: sql}
 	switch name := node.Label.(type) {
 	case *ast.PropertyGraphElementLabelLabelName:
 		label.Name = name.Name.Name
@@ -140,11 +145,29 @@ func graphLabelProperties(node *ast.PropertyGraphLabelAndProperties) (*GraphLabe
 	return label, nil
 }
 
-func graphPropertiesSQL(node ast.PropertyGraphElementProperties) string {
+func graphPropertiesFromAST(node ast.PropertyGraphElementProperties) (*GraphProperties, string) {
 	if node == nil {
-		return ""
+		return nil, ""
 	}
-	return node.SQL()
+	sql := node.SQL()
+	switch node := node.(type) {
+	case *ast.PropertyGraphNoProperties:
+		return &GraphProperties{NoProperties: true}, sql
+	case *ast.PropertyGraphPropertiesAre:
+		return &GraphProperties{AllColumns: true, ExceptColumns: columnNames(node.ExceptColumns)}, sql
+	case *ast.PropertyGraphDerivedPropertyList:
+		props := &GraphProperties{DerivedProperties: make([]*GraphDerivedProperty, 0, len(node.DerivedProperties))}
+		for _, prop := range node.DerivedProperties {
+			name := prop.Expr.SQL()
+			if prop.Alias != nil {
+				name = prop.Alias.Name
+			}
+			props.DerivedProperties = append(props.DerivedProperties, &GraphDerivedProperty{Name: name, SQL: prop.Expr.SQL()})
+		}
+		return props, sql
+	default:
+		return nil, sql
+	}
 }
 
 func columnNames(list *ast.PropertyGraphColumnNameList) []string {

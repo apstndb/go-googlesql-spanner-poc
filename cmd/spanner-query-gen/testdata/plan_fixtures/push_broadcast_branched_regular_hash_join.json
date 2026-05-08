@@ -1,0 +1,58 @@
+{
+  "plan": {
+    "planNodes": [
+      {
+        "index": 1,
+        "displayName": "Push Broadcast Hash Join",
+        "childLinks": [
+          {
+            "type": "Map",
+            "childIndex": 8
+          }
+        ]
+      },
+      {
+        "index": 8,
+        "displayName": "Serialize Result",
+        "childLinks": [
+          {
+            "childIndex": 9
+          },
+          {
+            "childIndex": 30
+          }
+        ]
+      },
+      {
+        "index": 9,
+        "displayName": "Hash Join",
+        "childLinks": [
+          {
+            "type": "Build",
+            "childIndex": 10
+          }
+        ]
+      },
+      {
+        "index": 10,
+        "displayName": "Scan",
+        "metadata": {
+          "scan_method": "Batch",
+          "scan_target": "$v2",
+          "scan_type": "BatchScan"
+        }
+      },
+      {
+        "index": 30,
+        "displayName": "Hash Join"
+      }
+    ]
+  },
+  "want_families": {
+    "1": "push_broadcast_hash_join",
+    "8": "serialize_result",
+    "9": "hash_join",
+    "10": "scan",
+    "30": "hash_join"
+  }
+}

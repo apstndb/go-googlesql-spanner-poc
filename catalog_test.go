@@ -85,14 +85,14 @@ RENAME TABLE Artists TO Performers;
 	}
 }
 
-func TestBuildSchemaCatalogIgnoresIndexes(t *testing.T) {
+func TestBuildSchemaCatalogIndexes(t *testing.T) {
 	const ddl = `
 CREATE TABLE Singers (
   SingerId INT64 NOT NULL,
   FirstName STRING(1024),
   LastName STRING(1024),
 ) PRIMARY KEY (SingerId);
-CREATE INDEX SingersByFirstLastName ON Singers(FirstName, LastName);
+CREATE NULL_FILTERED INDEX SingersByFirstLastName ON Singers(FirstName, LastName);
 `
 	catalog, err := BuildSchemaCatalog("schema.sql", ddl)
 	if err != nil {
@@ -100,6 +100,13 @@ CREATE INDEX SingersByFirstLastName ON Singers(FirstName, LastName);
 	}
 	if catalog.Tables["Singers"] == nil {
 		t.Fatalf("Singers table was not created")
+	}
+	index := catalog.Indexes["SingersByFirstLastName"]
+	if index == nil {
+		t.Fatalf("SingersByFirstLastName index was not created")
+	}
+	if !index.NullFiltered {
+		t.Fatalf("index.NullFiltered = false, want true")
 	}
 }
 

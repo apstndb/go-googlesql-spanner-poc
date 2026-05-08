@@ -1,0 +1,39 @@
+{
+  "plan": {
+    "planNodes": [
+      {
+        "index": 1,
+        "displayName": "Distributed Semi Apply",
+        "childLinks": [
+          {
+            "type": "Map",
+            "childIndex": 2
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "displayName": "Semi Apply",
+        "childLinks": [
+          {
+            "childIndex": 3
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "displayName": "Scan",
+        "metadata": {
+          "scan_method": "Row",
+          "scan_target": "$v2",
+          "scan_type": "BatchScan"
+        }
+      }
+    ]
+  },
+  "want_families": {
+    "1": "distributed_semi_apply",
+    "2": "distributed_semi_apply_internal_apply",
+    "3": "scan"
+  }
+}

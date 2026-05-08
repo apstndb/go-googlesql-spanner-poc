@@ -2,7 +2,10 @@ package spanalyzer
 
 import (
 	"os"
+	"strings"
 	"testing"
+
+	"cloud.google.com/go/spanner/apiv1/spannerpb"
 )
 
 func TestBigQueryAnalyzerTableSchemaForStatement(t *testing.T) {
@@ -108,6 +111,442 @@ FROM mydataset.produce
 	assertBigQueryField(t, schema.Fields[0], "item", "STRING", "NULLABLE")
 	assertBigQueryField(t, schema.Fields[1], "num_items", "INTEGER", "NULLABLE")
 	assertBigQueryField(t, schema.Fields[2], "total_sales", "INTEGER", "NULLABLE")
+}
+
+func TestBigQueryAnalyzerSpannerExternalDataset(t *testing.T) {
+	spannerCatalog, err := BuildSchemaCatalog("spanner.sql", `
+CREATE TABLE Singers (
+  SingerId INT64 NOT NULL,
+  FirstName STRING(MAX),
+  UpdatedAt TIMESTAMP,
+  SearchTokens TOKENLIST AS (TOKENIZE_FULLTEXT(FirstName)) HIDDEN
+) PRIMARY KEY (SingerId);
+`)
+	if err != nil {
+		t.Fatalf("BuildSchemaCatalog() error = %v", err)
+	}
+	analyzer, err := NewBigQueryAnalyzerFromDDL("bigquery.sql", `
+CREATE TABLE analytics.Customers (
+  CustomerId INT64,
+  FavoriteSingerId INT64
+);
+`)
+	if err != nil {
+		t.Fatalf("NewBigQueryAnalyzerFromDDL() error = %v", err)
+	}
+	binding, err := analyzer.AddSpannerExternalDataset("analytics_spanner", "app_spanner", spannerCatalog)
+	if err != nil {
+		t.Fatalf("AddSpannerExternalDataset() error = %v", err)
+	}
+	if binding.BigQueryDatasetRef.Dataset != "analytics_spanner" || binding.BigQueryDatasetRef.Path != "analytics_spanner" {
+		t.Fatalf("binding.BigQueryDatasetRef = %+v, want analytics_spanner canonical ref", binding.BigQueryDatasetRef)
+	}
+	if binding.Access != "unknown" || binding.AccessVerification.Status != "not_checked" {
+		t.Fatalf("binding access metadata = access %q status %q, want unknown/not_checked", binding.Access, binding.AccessVerification.Status)
+	}
+	if !binding.RequiresDataBoostAccess {
+		t.Fatalf("binding.RequiresDataBoostAccess = false, want true")
+	}
+	if got, want := len(binding.ProjectedTables), 1; got != want {
+		t.Fatalf("len(binding.ProjectedTables) = %d, want %d: %+v", got, want, binding.ProjectedTables)
+	}
+	if got, want := binding.ProjectedTables[0].Name, "analytics_spanner.Singers"; got != want {
+		t.Fatalf("binding table name = %q, want %q", got, want)
+	}
+	if got, want := binding.ProjectedTables[0].BigQueryTable, "analytics_spanner.Singers"; got != want {
+		t.Fatalf("binding.BigQueryTable = %q, want %q", got, want)
+	}
+	if got, want := binding.ProjectedTables[0].SpannerTable, "Singers"; got != want {
+		t.Fatalf("binding.SpannerTable = %q, want %q", got, want)
+	}
+	if !binding.ProjectedTables[0].VisibleInBigQueryMetadata || binding.ProjectedTables[0].BigQueryKeyMetadataVisible {
+		t.Fatalf("binding table metadata flags = visible %v key-visible %v, want true/false", binding.ProjectedTables[0].VisibleInBigQueryMetadata, binding.ProjectedTables[0].BigQueryKeyMetadataVisible)
+	}
+	if !binding.ProjectedTables[0].Columns[0].UnderlyingSpannerPrimaryKey || binding.ProjectedTables[0].Columns[0].BigQueryKeyMetadataVisible {
+		t.Fatalf("primary key metadata flags = %+v, want underlying Spanner PK without BigQuery key metadata", binding.ProjectedTables[0].Columns[0])
+	}
+	if binding.ProjectedTables[0].Columns[3].Visible || binding.ProjectedTables[0].Columns[3].Reason == "" {
+		t.Fatalf("hidden/tokenlist column projection = %+v, want invisible reason", binding.ProjectedTables[0].Columns[3])
+	}
+	if binding.ProjectedTables[0].Columns[3].VisibleInBigQueryMetadata {
+		t.Fatalf("hidden/tokenlist column VisibleInBigQueryMetadata = true, want false: %+v", binding.ProjectedTables[0].Columns[3])
+	}
+	if len(binding.Warnings) < 2 {
+		t.Fatalf("binding.Warnings = %+v, want Data Boost and omitted-column warnings", binding.Warnings)
+	}
+	if !warningsContainRule(binding.Warnings, "external-dataset-timestamp-caveat") {
+		t.Fatalf("binding.Warnings = %+v, want TIMESTAMP caveat warning", binding.Warnings)
+	}
+
+	schema, err := analyzer.TableSchemaForStatement(`
+SELECT c.CustomerId, s.SingerId, s.FirstName, s.UpdatedAt
+FROM analytics.Customers AS c
+JOIN analytics_spanner.Singers AS s
+  ON s.SingerId = c.FavoriteSingerId`)
+	if err != nil {
+		t.Fatalf("TableSchemaForStatement() error = %v", err)
+	}
+	if got, want := len(schema.Fields), 4; got != want {
+		t.Fatalf("len(schema.Fields) = %d, want %d", got, want)
+	}
+	assertBigQueryField(t, schema.Fields[0], "CustomerId", "INTEGER", "NULLABLE")
+	assertBigQueryField(t, schema.Fields[1], "SingerId", "INTEGER", "NULLABLE")
+	assertBigQueryField(t, schema.Fields[2], "FirstName", "STRING", "NULLABLE")
+	assertBigQueryField(t, schema.Fields[3], "UpdatedAt", "TIMESTAMP", "NULLABLE")
+}
+
+func TestBigQueryAnalyzerSpannerExternalDatasetCanonicalProjectAndAlias(t *testing.T) {
+	spannerCatalog, err := BuildSchemaCatalog("spanner.sql", `
+CREATE TABLE Singers (
+  SingerId INT64 NOT NULL,
+  FirstName STRING(MAX)
+) PRIMARY KEY (SingerId);
+`)
+	if err != nil {
+		t.Fatalf("BuildSchemaCatalog() error = %v", err)
+	}
+	analyzer, err := NewBigQueryAnalyzerFromDDL("bigquery.sql", "")
+	if err != nil {
+		t.Fatalf("NewBigQueryAnalyzerFromDDL() error = %v", err)
+	}
+	binding, err := analyzer.AddSpannerExternalDatasetWithOptions("analytics_spanner", "app_spanner", spannerCatalog, BigQuerySpannerExternalDatasetOptions{
+		DefaultProject: "example-project",
+		Access:         "cloud_resource",
+		DatabaseRole:   "reader",
+		AccessVerification: BigQuerySpannerExternalDatasetVerification{
+			Status:    "verified",
+			Source:    "external_evidence",
+			Verifier:  "terraform-plan",
+			CheckedAt: "2026-05-04T10:30:00Z",
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddSpannerExternalDatasetWithOptions() error = %v", err)
+	}
+	if got, want := binding.BigQueryDataset, "example-project.analytics_spanner"; got != want {
+		t.Fatalf("binding.BigQueryDataset = %q, want %q", got, want)
+	}
+	if got, want := binding.BigQueryDatasetRef.Project, "example-project"; got != want {
+		t.Fatalf("binding.BigQueryDatasetRef.Project = %q, want %q", got, want)
+	}
+	if got, want := binding.Access, "cloud_resource_connection"; got != want {
+		t.Fatalf("binding.Access = %q, want %q", got, want)
+	}
+	if binding.AccessVerification.Status != "verified" || binding.DatabaseRole != "reader" {
+		t.Fatalf("binding access metadata = status %q role %q, want verified reader", binding.AccessVerification.Status, binding.DatabaseRole)
+	}
+	if got, want := binding.AccessVerification.Status, "verified"; got != want {
+		t.Fatalf("binding.AccessVerification.Status = %q, want %q", got, want)
+	}
+	for _, sql := range []string{
+		"SELECT SingerId FROM `example-project.analytics_spanner.Singers`",
+		"SELECT SingerId FROM `analytics_spanner.Singers`",
+		"SELECT SingerId FROM analytics_spanner.Singers",
+		"SELECT SingerId FROM analytics_spanner.singers",
+	} {
+		schema, err := analyzer.TableSchemaForStatement(sql)
+		if err != nil {
+			t.Fatalf("TableSchemaForStatement(%q) error = %v", sql, err)
+		}
+		if got, want := len(schema.Fields), 1; got != want {
+			t.Fatalf("len(schema.Fields) = %d, want %d for %q", got, want, sql)
+		}
+		assertBigQueryField(t, schema.Fields[0], "SingerId", "INTEGER", "NULLABLE")
+	}
+}
+
+func TestBigQueryAnalyzerSpannerExternalDatasetRejectsVerificationWithoutEvidence(t *testing.T) {
+	spannerCatalog, err := BuildSchemaCatalog("spanner.sql", `
+CREATE TABLE Singers (
+  SingerId INT64 NOT NULL
+) PRIMARY KEY (SingerId);
+`)
+	if err != nil {
+		t.Fatalf("BuildSchemaCatalog() error = %v", err)
+	}
+	analyzer, err := NewBigQueryAnalyzerFromDDL("bigquery.sql", "")
+	if err != nil {
+		t.Fatalf("NewBigQueryAnalyzerFromDDL() error = %v", err)
+	}
+	_, err = analyzer.AddSpannerExternalDatasetWithOptions("analytics_spanner", "app_spanner", spannerCatalog, BigQuerySpannerExternalDatasetOptions{
+		AccessVerificationStatus: "verified",
+	})
+	if err == nil || !strings.Contains(err.Error(), `access verification status "verified" requires verifier and checked_at`) {
+		t.Fatalf("AddSpannerExternalDatasetWithOptions() error = %v, want evidence validation error", err)
+	}
+}
+
+func TestBigQueryAnalyzerSpannerExternalDatasetOmitPoliciesStillRejectExplicitReferences(t *testing.T) {
+	spannerCatalog := &Catalog{
+		Tables: map[string]*Table{
+			"Singers": {
+				Name: ObjectName{Parts: []string{"Singers"}},
+				Columns: []*Column{
+					{Name: "SingerId", Type: &TypeSpec{Code: spannerpb.TypeCode_INT64}},
+					{Name: "Profile", Type: &TypeSpec{Code: spannerpb.TypeCode_STRUCT}},
+				},
+			},
+			"analytics.Events": {
+				Name: ObjectName{Parts: []string{"analytics", "Events"}},
+				Columns: []*Column{{
+					Name: "EventId",
+					Type: &TypeSpec{Code: spannerpb.TypeCode_INT64},
+				}},
+			},
+		},
+	}
+	analyzer, err := NewBigQueryAnalyzerFromDDL("bigquery.sql", "")
+	if err != nil {
+		t.Fatalf("NewBigQueryAnalyzerFromDDL() error = %v", err)
+	}
+	if _, err := analyzer.AddSpannerExternalDatasetWithOptions("analytics_spanner", "app_spanner", spannerCatalog, BigQuerySpannerExternalDatasetOptions{
+		UnsupportedColumns: "omit",
+		NamedSchemaPolicy:  "warn_and_omit",
+	}); err != nil {
+		t.Fatalf("AddSpannerExternalDatasetWithOptions() error = %v", err)
+	}
+	starSchema, err := analyzer.TableSchemaForStatement("SELECT * FROM analytics_spanner.Singers")
+	if err != nil {
+		t.Fatalf("TableSchemaForStatement(SELECT *) error = %v", err)
+	}
+	if got, want := len(starSchema.Fields), 1; got != want {
+		t.Fatalf("SELECT * field count = %d, want %d", got, want)
+	}
+	assertBigQueryField(t, starSchema.Fields[0], "SingerId", "INTEGER", "NULLABLE")
+
+	for _, tc := range []struct {
+		name string
+		sql  string
+		want string
+	}{
+		{
+			name: "unsupported omitted column",
+			sql:  "SELECT Profile FROM analytics_spanner.Singers",
+			want: "Unrecognized name: Profile",
+		},
+		{
+			name: "omitted named schema table",
+			sql:  "SELECT EventId FROM analytics_spanner.analytics.Events",
+			want: "Table not found",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := analyzer.TableSchemaForStatement(tc.sql)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("TableSchemaForStatement() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestBigQueryAnalyzerSpannerExternalDatasetRejectsInformationSchemaAndDML(t *testing.T) {
+	spannerCatalog, err := BuildSchemaCatalog("spanner.sql", `
+CREATE TABLE Singers (
+  SingerId INT64 NOT NULL
+) PRIMARY KEY (SingerId);
+`)
+	if err != nil {
+		t.Fatalf("BuildSchemaCatalog() error = %v", err)
+	}
+	analyzer, err := NewBigQueryAnalyzerFromDDL("bigquery.sql", "")
+	if err != nil {
+		t.Fatalf("NewBigQueryAnalyzerFromDDL() error = %v", err)
+	}
+	if _, err := analyzer.AddSpannerExternalDataset("analytics_spanner", "app_spanner", spannerCatalog); err != nil {
+		t.Fatalf("AddSpannerExternalDataset() error = %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		sql  string
+		want string
+	}{
+		{
+			name: "information schema",
+			sql:  "SELECT * FROM analytics_spanner.INFORMATION_SCHEMA.TABLES",
+			want: "Table not found",
+		},
+		{
+			name: "dml has no table schema row type",
+			sql:  "INSERT INTO analytics_spanner.Singers (SingerId) VALUES (1)",
+			want: "external dataset table analytics_spanner.Singers is read-only and cannot be used as dml_target",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := analyzer.TableSchemaForStatement(tc.sql)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("TableSchemaForStatement() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestBigQueryAnalyzerSpannerExternalDatasetRejectsCaseInsensitiveTableNameConflict(t *testing.T) {
+	spannerCatalog := &Catalog{
+		Tables: map[string]*Table{
+			"Singers": {
+				Name: ObjectName{Parts: []string{"Singers"}},
+				Columns: []*Column{{
+					Name: "SingerId",
+					Type: &TypeSpec{Code: spannerpb.TypeCode_INT64},
+				}},
+			},
+			"singers": {
+				Name: ObjectName{Parts: []string{"singers"}},
+				Columns: []*Column{{
+					Name: "SingerId",
+					Type: &TypeSpec{Code: spannerpb.TypeCode_INT64},
+				}},
+			},
+		},
+	}
+	analyzer, err := NewBigQueryAnalyzerFromDDL("bigquery.sql", "")
+	if err != nil {
+		t.Fatalf("NewBigQueryAnalyzerFromDDL() error = %v", err)
+	}
+	_, err = analyzer.AddSpannerExternalDataset("analytics_spanner", "app_spanner", spannerCatalog)
+	if err == nil || !strings.Contains(err.Error(), "case-insensitive") {
+		t.Fatalf("AddSpannerExternalDataset() error = %v, want case-insensitive conflict", err)
+	}
+}
+
+func TestBigQueryAnalyzerSpannerExternalDatasetRejectsCaseInsensitiveColumnNameConflict(t *testing.T) {
+	spannerCatalog := &Catalog{
+		Tables: map[string]*Table{
+			"Singers": {
+				Name: ObjectName{Parts: []string{"Singers"}},
+				Columns: []*Column{
+					{Name: "SingerId", Type: &TypeSpec{Code: spannerpb.TypeCode_INT64}},
+					{Name: "Foo", Type: &TypeSpec{Code: spannerpb.TypeCode_STRING}},
+					{Name: "foo", Type: &TypeSpec{Code: spannerpb.TypeCode_STRING}},
+				},
+			},
+		},
+	}
+	analyzer, err := NewBigQueryAnalyzerFromDDL("bigquery.sql", "")
+	if err != nil {
+		t.Fatalf("NewBigQueryAnalyzerFromDDL() error = %v", err)
+	}
+	_, err = analyzer.AddSpannerExternalDataset("analytics_spanner", "app_spanner", spannerCatalog)
+	if err == nil || !strings.Contains(err.Error(), "projected column names are case-insensitive") {
+		t.Fatalf("AddSpannerExternalDataset() error = %v, want case-insensitive column conflict", err)
+	}
+}
+
+func TestBigQueryAnalyzerSpannerExternalDatasetRejectsCatalogTableCollision(t *testing.T) {
+	spannerCatalog, err := BuildSchemaCatalog("spanner.sql", `
+CREATE TABLE Singers (
+  SingerId INT64 NOT NULL
+) PRIMARY KEY (SingerId);
+`)
+	if err != nil {
+		t.Fatalf("BuildSchemaCatalog() error = %v", err)
+	}
+	for _, tc := range []struct {
+		name    string
+		ddl     string
+		options BigQuerySpannerExternalDatasetOptions
+	}{
+		{
+			name: "direct dataset path",
+			ddl: `
+CREATE SCHEMA analytics_spanner;
+CREATE TABLE analytics_spanner.Singers (SingerId INT64);
+`,
+		},
+		{
+			name: "unqualified alias from default project",
+			ddl: `
+CREATE SCHEMA analytics_spanner;
+CREATE TABLE analytics_spanner.Singers (SingerId INT64);
+`,
+			options: BigQuerySpannerExternalDatasetOptions{DefaultProject: "example-project"},
+		},
+		{
+			name: "project qualified path",
+			ddl: `
+CREATE SCHEMA ` + "`example-project`" + `.analytics_spanner;
+CREATE TABLE ` + "`example-project`" + `.analytics_spanner.Singers (SingerId INT64);
+`,
+			options: BigQuerySpannerExternalDatasetOptions{DefaultProject: "example-project"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			analyzer, err := NewBigQueryAnalyzerFromDDL("bigquery.sql", tc.ddl)
+			if err != nil {
+				t.Fatalf("NewBigQueryAnalyzerFromDDL() error = %v", err)
+			}
+			_, err = analyzer.AddSpannerExternalDatasetWithOptions("analytics_spanner", "app_spanner", spannerCatalog, tc.options)
+			if err == nil || !strings.Contains(err.Error(), "bigquery catalog table collision") {
+				t.Fatalf("AddSpannerExternalDatasetWithOptions() error = %v, want catalog table collision", err)
+			}
+		})
+	}
+}
+
+func TestBigQueryAnalyzerSpannerExternalDatasetProjectionPolicies(t *testing.T) {
+	spannerCatalog := &Catalog{
+		Tables: map[string]*Table{
+			"Singers": {
+				Name: ObjectName{Parts: []string{"Singers"}},
+				Columns: []*Column{
+					{Name: "SingerId", Type: &TypeSpec{Code: spannerpb.TypeCode_INT64}},
+					{Name: "Profile", Type: &TypeSpec{Code: spannerpb.TypeCode_STRUCT}},
+				},
+			},
+			"analytics.Events": {
+				Name: ObjectName{Parts: []string{"analytics", "Events"}},
+				Columns: []*Column{{
+					Name: "EventId",
+					Type: &TypeSpec{Code: spannerpb.TypeCode_INT64},
+				}},
+			},
+		},
+	}
+	analyzer, err := NewBigQueryAnalyzerFromDDL("bigquery.sql", "")
+	if err != nil {
+		t.Fatalf("NewBigQueryAnalyzerFromDDL() error = %v", err)
+	}
+	binding, err := analyzer.AddSpannerExternalDatasetWithOptions("analytics_spanner", "app_spanner", spannerCatalog, BigQuerySpannerExternalDatasetOptions{
+		UnsupportedColumns: "omit",
+		NamedSchemaPolicy:  "warn_and_omit",
+	})
+	if err != nil {
+		t.Fatalf("AddSpannerExternalDatasetWithOptions() error = %v", err)
+	}
+	if got, want := binding.ProjectionPolicy.UnsupportedColumns, "omit"; got != want {
+		t.Fatalf("UnsupportedColumns policy = %q, want %q", got, want)
+	}
+	if got, want := len(binding.ProjectedTables), 2; got != want {
+		t.Fatalf("len(binding.ProjectedTables) = %d, want %d: %+v", got, want, binding.ProjectedTables)
+	}
+	if binding.ProjectedTables[0].Visible && binding.ProjectedTables[1].Visible {
+		t.Fatalf("binding.ProjectedTables = %+v, want one omitted named-schema table", binding.ProjectedTables)
+	}
+	if len(binding.Warnings) < 4 {
+		t.Fatalf("binding.Warnings = %+v, want access, Data Boost, unsupported-column, and named-schema warnings", binding.Warnings)
+	}
+
+	analyzer, err = NewBigQueryAnalyzerFromDDL("bigquery.sql", "")
+	if err != nil {
+		t.Fatalf("NewBigQueryAnalyzerFromDDL() error = %v", err)
+	}
+	_, err = analyzer.AddSpannerExternalDatasetWithOptions("analytics_spanner", "app_spanner", spannerCatalog, BigQuerySpannerExternalDatasetOptions{
+		UnsupportedColumns: "error",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported Spanner column") {
+		t.Fatalf("AddSpannerExternalDatasetWithOptions() error = %v, want unsupported-column policy error", err)
+	}
+
+	analyzer, err = NewBigQueryAnalyzerFromDDL("bigquery.sql", "")
+	if err != nil {
+		t.Fatalf("NewBigQueryAnalyzerFromDDL() error = %v", err)
+	}
+	_, err = analyzer.AddSpannerExternalDatasetWithOptions("analytics_spanner", "app_spanner", spannerCatalog, BigQuerySpannerExternalDatasetOptions{
+		NamedSchemaPolicy: "error",
+	})
+	if err == nil || !strings.Contains(err.Error(), "named Spanner schemas are not visible") {
+		t.Fatalf("AddSpannerExternalDatasetWithOptions() error = %v, want named-schema policy error", err)
+	}
 }
 
 func TestBigQueryAnalyzerExternalQueryRewrite(t *testing.T) {
@@ -232,6 +671,34 @@ FROM EXTERNAL_QUERY(
 	assertBigQueryField(t, schema.Fields[0], "order_number", "STRING", "NULLABLE")
 }
 
+func TestBigQueryAnalyzerExternalQueryRejectsStructOutput(t *testing.T) {
+	spannerAnalyzer, err := NewAnalyzerFromDDL("spanner.sql", `
+CREATE TABLE Singers (
+  SingerId INT64 NOT NULL,
+  FirstName STRING(MAX)
+) PRIMARY KEY (SingerId);
+`)
+	if err != nil {
+		t.Fatalf("NewAnalyzerFromDDL() error = %v", err)
+	}
+	bigQueryAnalyzer, err := NewBigQueryAnalyzerFromDDL("bigquery.sql", "")
+	if err != nil {
+		t.Fatalf("NewBigQueryAnalyzerFromDDL() error = %v", err)
+	}
+	bigQueryAnalyzer.SetExternalQueryAnalyzers(map[string]*Analyzer{
+		"spanner-conn": spannerAnalyzer,
+	})
+
+	_, err = bigQueryAnalyzer.TableSchemaForStatement(`
+SELECT q.singer
+FROM EXTERNAL_QUERY(
+  'spanner-conn',
+  '''SELECT STRUCT(SingerId AS SingerId, FirstName AS FirstName) AS singer FROM Singers''') AS q`)
+	if err == nil || !strings.Contains(err.Error(), "STRUCT is unsupported for BigQuery Spanner federated query output") {
+		t.Fatalf("TableSchemaForStatement() error = %v, want STRUCT rejection", err)
+	}
+}
+
 func assertBigQueryField(t *testing.T, field *BigQueryTableFieldSchema, name, typ, mode string) {
 	t.Helper()
 	if field == nil {
@@ -246,4 +713,13 @@ func assertBigQueryField(t *testing.T, field *BigQueryTableFieldSchema, name, ty
 	if field.Mode != mode {
 		t.Fatalf("field.Mode = %q, want %q", field.Mode, mode)
 	}
+}
+
+func warningsContainRule(warnings []QueryCodegenPlanWarning, rule string) bool {
+	for _, warning := range warnings {
+		if warning.Rule == rule {
+			return true
+		}
+	}
+	return false
 }

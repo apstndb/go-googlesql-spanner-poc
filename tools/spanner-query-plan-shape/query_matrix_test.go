@@ -1,0 +1,861 @@
+package main
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+
+	"cloud.google.com/go/spanner/apiv1/spannerpb"
+	"google.golang.org/protobuf/types/known/structpb"
+)
+
+func TestBuildQueryMatrixCases(t *testing.T) {
+	got := buildQueryMatrixCases("matrix", `SELECT {{.Projection.SQL}} FROM {{.Table.SQL}}`, queryMatrixAxis{
+		Name: "Projection",
+		Values: []queryMatrixAxisValue{
+			{Label: "one", Fields: map[string]string{"SQL": "1"}},
+			{Label: "two", Fields: map[string]string{"SQL": "2"}},
+		},
+	}, queryMatrixAxis{
+		Name: "Table",
+		Values: []queryMatrixAxisValue{
+			{Label: "singers", Fields: map[string]string{"SQL": "Singers"}},
+		},
+	})
+	if gotLen, wantLen := len(got), 2; gotLen != wantLen {
+		t.Fatalf("len(buildQueryMatrixCases()) = %d, want %d", gotLen, wantLen)
+	}
+	if gotLabel, wantLabel := got[0].Label, "matrix/one/singers"; gotLabel != wantLabel {
+		t.Fatalf("first label = %q, want %q", gotLabel, wantLabel)
+	}
+	if gotSQL, wantSQL := got[0].SQL, "SELECT 1 FROM Singers"; gotSQL != wantSQL {
+		t.Fatalf("first SQL = %q, want %q", gotSQL, wantSQL)
+	}
+	if gotLabel, wantLabel := got[1].Label, "matrix/two/singers"; gotLabel != wantLabel {
+		t.Fatalf("second label = %q, want %q", gotLabel, wantLabel)
+	}
+	if gotSQL, wantSQL := got[1].SQL, "SELECT 2 FROM Singers"; gotSQL != wantSQL {
+		t.Fatalf("second SQL = %q, want %q", gotSQL, wantSQL)
+	}
+}
+
+func TestLoadQueriesDML(t *testing.T) {
+	queries, err := loadQueries("dml", nil, nil)
+	if err != nil {
+		t.Fatalf("loadQueries(%q) error = %v", "dml", err)
+	}
+	if len(queries) == 0 {
+		t.Fatal("loadQueries(\"dml\") returned no queries")
+	}
+	seen := map[string]bool{}
+	for _, query := range queries {
+		seen[query.Label] = true
+		if got, want := query.effectivePlanMode(), planModeReadWrite; got != want {
+			t.Fatalf("%s plan mode = %q, want %q", query.Label, got, want)
+		}
+	}
+	for _, label := range []string{
+		"dml/insert-values",
+		"dml/insert-ignore",
+		"dml/insert-or-ignore",
+		"dml/insert-or-update",
+		"dml/insert-on-conflict-do-nothing",
+		"dml/insert-on-conflict-do-update",
+		"dml/update-literal",
+		"dml/delete-where",
+	} {
+		if !seen[label] {
+			t.Fatalf("loadQueries(\"dml\") missing %s", label)
+		}
+	}
+}
+
+func TestLoadDDLsDMLIncludesDMLOnlyObjects(t *testing.T) {
+	ddls, err := loadDDLs("dml", nil)
+	if err != nil {
+		t.Fatalf("loadDDLs(%q) error = %v", "dml", err)
+	}
+	joined := strings.Join(ddls, "\n")
+	for _, want := range []string{
+		"ALTER TABLE Singers ADD COLUMN Status",
+		"CREATE UNIQUE INDEX UniqueIndex_SingerName",
+		"CREATE TABLE AckworthSingers",
+		"CREATE TABLE Fans",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("loadDDLs(\"dml\") missing %q in:\n%s", want, joined)
+		}
+	}
+}
+
+func TestLoadDDLsOptimizerGapsIncludesDedicatedObjects(t *testing.T) {
+	ddls, err := loadDDLs("optimizer_gaps", nil)
+	if err != nil {
+		t.Fatalf("loadDDLs(%q) error = %v", "optimizer_gaps", err)
+	}
+	joined := strings.Join(ddls, "\n")
+	for _, want := range []string{
+		"CREATE TABLE Venues",
+		"CREATE TABLE FKCustomers",
+		"CREATE TABLE FKOrders",
+		"REFERENCES FKCustomers",
+		"NOT ENFORCED",
+		"CREATE TABLE AckworthSingers",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("loadDDLs(\"optimizer_gaps\") missing %q in:\n%s", want, joined)
+		}
+	}
+}
+
+func TestLoadDDLsDocsIncludesTimestampPushdownPrerequisites(t *testing.T) {
+	ddls, err := loadDDLs("docs", nil)
+	if err != nil {
+		t.Fatalf("loadDDLs(%q) error = %v", "docs", err)
+	}
+	joined := strings.Join(ddls, "\n")
+	for _, want := range []string{
+		"SingerInfo BYTES(MAX)",
+		"ModificationTime TIMESTAMP OPTIONS (allow_commit_timestamp = true)",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("loadDDLs(\"docs\") missing %q in:\n%s", want, joined)
+		}
+	}
+}
+
+func TestLoadDDLsFullTextSearchUsesDedicatedSchema(t *testing.T) {
+	ddls, err := loadDDLs("full_text_search", nil)
+	if err != nil {
+		t.Fatalf("loadDDLs(%q) error = %v", "full_text_search", err)
+	}
+	joined := strings.Join(ddls, "\n")
+	for _, want := range []string{
+		"CREATE TABLE SearchAlbums",
+		"TOKENLIST AS (TOKENIZE_FULLTEXT",
+		"TOKENLIST AS (TOKENIZE_SUBSTRING",
+		"CREATE SEARCH INDEX SearchAlbumsTitleIndex",
+		"CREATE SEARCH INDEX SearchAlbumsTitleSubstringIndex",
+		"CREATE SEARCH INDEX SearchAlbumsTitleRatingIndex",
+		"CREATE SEARCH INDEX SearchAlbumsMixedIndex",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("loadDDLs(\"full_text_search\") missing %q in:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "MusicGraph") || strings.Contains(joined, "CREATE TABLE Singers") {
+		t.Fatalf("full_text_search schema unexpectedly includes docs schema objects:\n%s", joined)
+	}
+}
+
+func TestLoadQueriesOptimizerGaps(t *testing.T) {
+	queries, err := loadQueries("optimizer_gaps", nil, nil)
+	if err != nil {
+		t.Fatalf("loadQueries(%q) error = %v", "optimizer_gaps", err)
+	}
+	seen := map[string]queryCase{}
+	for _, query := range queries {
+		seen[query.Label] = query
+	}
+	for _, label := range []string{
+		"optimizer-gaps/v8/with-large-in-join-order-limit",
+		"optimizer-gaps/v8/use-unenforced-foreign-key-true",
+		"optimizer-gaps/v7/unhinted-index-union-candidate",
+		"optimizer-gaps/v6/dml-insert-select-filter",
+		"optimizer-gaps/v6/full-outer-join-predicate-limit",
+		"optimizer-gaps/v3/sorted-limit-cross-apply",
+		"optimizer-gaps/v3/push-computation-through-join",
+		"optimizer-gaps/v2/regexp-contains-prefix",
+		"optimizer-gaps/v2/regexp-contains-prefix-forced-index",
+		"optimizer-gaps/v2/like-prefix-forced-index",
+	} {
+		if _, ok := seen[label]; !ok {
+			t.Fatalf("loadQueries(\"optimizer_gaps\") missing %s", label)
+		}
+	}
+	if got, want := seen["optimizer-gaps/v6/dml-insert-select-filter"].effectivePlanMode(), planModeReadWrite; got != want {
+		t.Fatalf("DML optimizer gap plan mode = %q, want %q", got, want)
+	}
+	if !strings.Contains(seen["optimizer-gaps/v8/with-large-in-join-order-limit"].SQL, "WITH CandidateSingers") {
+		t.Fatalf("v8 CTE probe missing WITH clause: %s", seen["optimizer-gaps/v8/with-large-in-join-order-limit"].SQL)
+	}
+	if !strings.Contains(seen["optimizer-gaps/v8/use-unenforced-foreign-key-true"].SQL, "USE_UNENFORCED_FOREIGN_KEY=TRUE") {
+		t.Fatalf("FK true probe missing hint: %s", seen["optimizer-gaps/v8/use-unenforced-foreign-key-true"].SQL)
+	}
+}
+
+func TestLoadQueriesFullTextSearch(t *testing.T) {
+	queries, err := loadQueries("full_text_search", nil, nil)
+	if err != nil {
+		t.Fatalf("loadQueries(%q) error = %v", "full_text_search", err)
+	}
+	seen := map[string]string{}
+	for _, query := range queries {
+		seen[query.Label] = query.SQL
+	}
+	for _, label := range []string{
+		"full-text-search/search",
+		"full-text-search/force-index",
+		"full-text-search/snippet",
+		"full-text-search/score-order",
+		"full-text-search/substring",
+		"full-text-search/multi-column-conjunction",
+		"full-text-search/multi-column-disjunction",
+		"full-text-search/multi-column-negation",
+		"full-text-search/tokenlist-concat",
+		"full-text-search/partitioned-ordered-index",
+		"full-text-search/numeric-array-any",
+		"full-text-search/numeric-array-all",
+		"full-text-search/mixed-accelerated",
+		"full-text-search/mixed-stored-filter",
+		"full-text-search/mixed-back-join",
+	} {
+		if seen[label] == "" {
+			t.Fatalf("loadQueries(\"full_text_search\") missing %s", label)
+		}
+	}
+	if !strings.Contains(seen["full-text-search/search"], "SEARCH(") {
+		t.Fatalf("search query missing SEARCH(): %s", seen["full-text-search/search"])
+	}
+	if !strings.Contains(seen["full-text-search/score-order"], "SCORE(") {
+		t.Fatalf("score query missing SCORE(): %s", seen["full-text-search/score-order"])
+	}
+	if !strings.Contains(seen["full-text-search/numeric-array-any"], "ARRAY_INCLUDES_ANY") {
+		t.Fatalf("numeric array query missing ARRAY_INCLUDES_ANY(): %s", seen["full-text-search/numeric-array-any"])
+	}
+}
+
+func TestLoadQueriesTVF(t *testing.T) {
+	queries, err := loadQueries("tvf", nil, nil)
+	if err != nil {
+		t.Fatalf("loadQueries(%q) error = %v", "tvf", err)
+	}
+	if got, want := len(queries), 1; got != want {
+		t.Fatalf("len(loadQueries(\"tvf\")) = %d, want %d", got, want)
+	}
+	if got, want := queries[0].Label, "tvf/change-stream"; got != want {
+		t.Fatalf("TVF query label = %q, want %q", got, want)
+	}
+	if !strings.Contains(queries[0].SQL, "READ_EverythingStream") {
+		t.Fatalf("TVF query SQL missing READ_EverythingStream: %s", queries[0].SQL)
+	}
+}
+
+func TestLoadQueriesFunctionHint(t *testing.T) {
+	queries, err := loadQueries("function_hint", nil, nil)
+	if err != nil {
+		t.Fatalf("loadQueries(%q) error = %v", "function_hint", err)
+	}
+	if got, want := len(queries), 3; got != want {
+		t.Fatalf("len(loadQueries(\"function_hint\")) = %d, want %d", got, want)
+	}
+	seen := map[string]string{}
+	for _, query := range queries {
+		seen[query.Label] = query.SQL
+		if !strings.Contains(query.SQL, "SHA512(s.SingerInfo)") {
+			t.Fatalf("%s SQL missing SHA512 probe: %s", query.Label, query.SQL)
+		}
+	}
+	if strings.Contains(seen["function-hint/default_inline"], "DISABLE_INLINE") {
+		t.Fatalf("default inline query unexpectedly has DISABLE_INLINE: %s", seen["function-hint/default_inline"])
+	}
+	if !strings.Contains(seen["function-hint/disable_inline_false"], "@{DISABLE_INLINE=FALSE}") {
+		t.Fatalf("disable_inline_false query missing function hint: %s", seen["function-hint/disable_inline_false"])
+	}
+	if !strings.Contains(seen["function-hint/disable_inline_true"], "@{DISABLE_INLINE=TRUE}") {
+		t.Fatalf("disable_inline_true query missing function hint: %s", seen["function-hint/disable_inline_true"])
+	}
+}
+
+func TestLoadQueriesCTE(t *testing.T) {
+	queries, err := loadQueries("cte", nil, nil)
+	if err != nil {
+		t.Fatalf("loadQueries(%q) error = %v", "cte", err)
+	}
+	seen := map[string]string{}
+	for _, query := range queries {
+		seen[query.Label] = query.SQL
+	}
+	for _, label := range []string{
+		"cte/constant-single-reference",
+		"cte/constant-repeated-reference",
+		"cte/deterministic-function-single-reference",
+		"cte/deterministic-function-repeated-reference",
+		"cte/current-timestamp-single-reference",
+		"cte/current-timestamp-repeated-reference",
+		"cte/table-single-reference",
+		"cte/table-repeated-reference",
+	} {
+		if seen[label] == "" {
+			t.Fatalf("loadQueries(\"cte\") missing %s", label)
+		}
+	}
+	if !strings.Contains(seen["cte/deterministic-function-single-reference"], "SHA256") {
+		t.Fatalf("deterministic CTE query missing SHA256: %s", seen["cte/deterministic-function-single-reference"])
+	}
+	if !strings.Contains(seen["cte/current-timestamp-single-reference"], "CURRENT_TIMESTAMP") {
+		t.Fatalf("current timestamp CTE query missing CURRENT_TIMESTAMP: %s", seen["cte/current-timestamp-single-reference"])
+	}
+	if !strings.Contains(seen["cte/table-single-reference"], "FROM Singers") {
+		t.Fatalf("table CTE query missing Singers reference: %s", seen["cte/table-single-reference"])
+	}
+}
+
+func TestLoadDDLsTVFIncludesChangeStream(t *testing.T) {
+	ddls, err := loadDDLs("tvf", nil)
+	if err != nil {
+		t.Fatalf("loadDDLs(%q) error = %v", "tvf", err)
+	}
+	joined := strings.Join(ddls, "\n")
+	for _, want := range []string{
+		"CREATE TABLE Singers",
+		"CREATE CHANGE STREAM EverythingStream",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("loadDDLs(\"tvf\") missing %q in:\n%s", want, joined)
+		}
+	}
+}
+
+func TestExpandOptimizerVersionMatrixUsesStatementHints(t *testing.T) {
+	got := expandOptimizerVersionMatrix([]queryCase{
+		{Label: "plain", SQL: "SELECT 1"},
+		{Label: "hinted", SQL: "@{JOIN_METHOD=APPLY_JOIN, OPTIMIZER_VERSION=5} SELECT 1"},
+	})
+	if gotLen, wantLen := len(got), 16; gotLen != wantLen {
+		t.Fatalf("len(expandOptimizerVersionMatrix()) = %d, want %d", gotLen, wantLen)
+	}
+	if gotLabel, wantLabel := got[0].Label, "optimizer-version/v1/plain"; gotLabel != wantLabel {
+		t.Fatalf("first label = %q, want %q", gotLabel, wantLabel)
+	}
+	if gotSQL, wantSQL := got[0].SQL, "@{OPTIMIZER_VERSION=1}\nSELECT 1"; gotSQL != wantSQL {
+		t.Fatalf("first SQL = %q, want %q", gotSQL, wantSQL)
+	}
+	if gotLabel, wantLabel := got[15].Label, "optimizer-version/v8/hinted"; gotLabel != wantLabel {
+		t.Fatalf("last label = %q, want %q", gotLabel, wantLabel)
+	}
+	if gotSQL, wantSQL := got[15].SQL, "@{OPTIMIZER_VERSION=8, JOIN_METHOD=APPLY_JOIN}\nSELECT 1"; gotSQL != wantSQL {
+		t.Fatalf("last SQL = %q, want %q", gotSQL, wantSQL)
+	}
+}
+
+func TestLoadQueriesStatementHintQueryMatrix(t *testing.T) {
+	queries, err := loadQueries("statement_hint_query_matrix", nil, nil)
+	if err != nil {
+		t.Fatalf("loadQueries(%q) error = %v", "statement_hint_query_matrix", err)
+	}
+	wantLen := len(documentedStatementHintVariants()) * len(docsQueries)
+	if gotLen := len(queries); gotLen != wantLen {
+		t.Fatalf("len(loadQueries(\"statement_hint_query_matrix\")) = %d, want %d", gotLen, wantLen)
+	}
+	var sawMultiAssignment bool
+	var sawOptimizerReplacement bool
+	for _, query := range queries {
+		switch query.Label {
+		case "statement-hint-query-matrix/hash_join_build_left/execution-plans/join":
+			sawMultiAssignment = true
+			if !strings.HasPrefix(query.SQL, "@{JOIN_METHOD=HASH_JOIN, HASH_JOIN_BUILD_SIDE=BUILD_LEFT}\n") {
+				t.Fatalf("multi-assignment query SQL = %q", query.SQL)
+			}
+		case "statement-hint-query-matrix/optimizer_version_latest/best-practices/order-by-desc-limit-back-join-optimizer-version-5":
+			sawOptimizerReplacement = true
+			if !strings.HasPrefix(query.SQL, "@{OPTIMIZER_VERSION=latest_version}\n") {
+				t.Fatalf("optimizer replacement query SQL = %q", query.SQL)
+			}
+			if strings.Contains(query.SQL, "OPTIMIZER_VERSION=5") {
+				t.Fatalf("optimizer replacement query retained old optimizer version: %q", query.SQL)
+			}
+		}
+	}
+	if !sawMultiAssignment {
+		t.Fatal("statement hint query matrix missing hash_join_build_left/execution-plans/join")
+	}
+	if !sawOptimizerReplacement {
+		t.Fatal("statement hint query matrix missing optimizer replacement case")
+	}
+}
+
+func TestExpandAllowDistributedMergeMatrixUsesStatementHints(t *testing.T) {
+	got := expandAllowDistributedMergeMatrix([]queryCase{
+		{Label: "plain", SQL: "SELECT 1"},
+		{Label: "hinted", SQL: "@{JOIN_METHOD=APPLY_JOIN, ALLOW_DISTRIBUTED_MERGE=TRUE} SELECT 1"},
+	})
+	if gotLen, wantLen := len(got), 6; gotLen != wantLen {
+		t.Fatalf("len(expandAllowDistributedMergeMatrix()) = %d, want %d", gotLen, wantLen)
+	}
+	if gotLabel, wantLabel := got[0].Label, "allow-distributed-merge/default/plain"; gotLabel != wantLabel {
+		t.Fatalf("first label = %q, want %q", gotLabel, wantLabel)
+	}
+	if gotSQL, wantSQL := got[0].SQL, "SELECT 1"; gotSQL != wantSQL {
+		t.Fatalf("first SQL = %q, want %q", gotSQL, wantSQL)
+	}
+	if gotLabel, wantLabel := got[2].Label, "allow-distributed-merge/false/plain"; gotLabel != wantLabel {
+		t.Fatalf("third label = %q, want %q", gotLabel, wantLabel)
+	}
+	if gotSQL, wantSQL := got[2].SQL, "@{ALLOW_DISTRIBUTED_MERGE=FALSE}\nSELECT 1"; gotSQL != wantSQL {
+		t.Fatalf("third SQL = %q, want %q", gotSQL, wantSQL)
+	}
+	if gotLabel, wantLabel := got[5].Label, "allow-distributed-merge/false/hinted"; gotLabel != wantLabel {
+		t.Fatalf("last label = %q, want %q", gotLabel, wantLabel)
+	}
+	if gotSQL, wantSQL := got[5].SQL, "@{ALLOW_DISTRIBUTED_MERGE=FALSE, JOIN_METHOD=APPLY_JOIN}\nSELECT 1"; gotSQL != wantSQL {
+		t.Fatalf("last SQL = %q, want %q", gotSQL, wantSQL)
+	}
+}
+
+func TestPrintPlanCompactMetadata(t *testing.T) {
+	plan := &spannerpb.QueryPlan{
+		PlanNodes: []*spannerpb.PlanNode{
+			{
+				Index:       0,
+				DisplayName: "Distributed Union",
+				Metadata: mustStruct(t, map[string]interface{}{
+					"preserve_subquery_order": true,
+				}),
+				ChildLinks: []*spannerpb.PlanNode_ChildLink{
+					{Type: "Input", ChildIndex: 1},
+				},
+			},
+			{
+				Index:       1,
+				DisplayName: "Filter Scan",
+				Metadata: mustStruct(t, map[string]interface{}{
+					"seekable_key_size": float64(0),
+				}),
+				ChildLinks: []*spannerpb.PlanNode_ChildLink{
+					{Type: "Input", ChildIndex: 2},
+					{Type: "Residual Condition", ChildIndex: 3},
+				},
+			},
+			{
+				Index:       2,
+				DisplayName: "Scan",
+				Metadata: mustStruct(t, map[string]interface{}{
+					"Full scan":   true,
+					"scan_method": "Automatic",
+				}),
+				ChildLinks: []*spannerpb.PlanNode_ChildLink{
+					{Type: "Timestamp Condition", ChildIndex: 4},
+				},
+			},
+			{Index: 3, DisplayName: "Function"},
+			{Index: 4, DisplayName: "Function"},
+		},
+	}
+
+	var stdout bytes.Buffer
+	if err := printPlanCompactDFSMetadata(&stdout, queryCase{Label: "timestamp"}, plan); err != nil {
+		t.Fatalf("printPlanCompactDFSMetadata() error = %v", err)
+	}
+	want := "timestamp: Distributed Union{preserve_subquery_order=true} > Filter Scan{seekable_key_size=0; Function[Residual Condition]} > Scan{full_scan=true, scan_method=Automatic; Function[Timestamp Condition]}\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("printPlanCompactDFSMetadata() = %q, want %q", got, want)
+	}
+}
+
+func TestCompactMetadataOperatorKeepsSameNameWithDifferentAnnotations(t *testing.T) {
+	plan := &spannerpb.QueryPlan{
+		PlanNodes: []*spannerpb.PlanNode{
+			{
+				Index:       0,
+				DisplayName: "Scan",
+				Metadata: mustStruct(t, map[string]interface{}{
+					"scan_method": "Automatic",
+				}),
+			},
+			{
+				Index:       1,
+				DisplayName: "Scan",
+				Metadata: mustStruct(t, map[string]interface{}{
+					"scan_method": "Row",
+				}),
+			},
+			{
+				Index:       2,
+				DisplayName: "Scan",
+				Metadata: mustStruct(t, map[string]interface{}{
+					"scan_method": "Row",
+				}),
+			},
+		},
+	}
+
+	var stdout bytes.Buffer
+	if err := printPlanCompactDFSMetadata(&stdout, queryCase{Label: "scans"}, plan); err != nil {
+		t.Fatalf("printPlanCompactDFSMetadata() error = %v", err)
+	}
+	want := "scans: Scan{scan_method=Automatic} > Scan{scan_method=Row}\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("printPlanCompactDFSMetadata() = %q, want %q", got, want)
+	}
+}
+
+func TestPrintPlanCompactDFSUsesChildLinks(t *testing.T) {
+	plan := &spannerpb.QueryPlan{
+		PlanNodes: []*spannerpb.PlanNode{
+			{Index: 0, DisplayName: "Serialize Result", ChildLinks: []*spannerpb.PlanNode_ChildLink{
+				{Type: "Input", ChildIndex: 2},
+			}},
+			{Index: 1, DisplayName: "Scan"},
+			{Index: 2, DisplayName: "Filter Scan", ChildLinks: []*spannerpb.PlanNode_ChildLink{
+				{Type: "Input", ChildIndex: 1},
+			}},
+		},
+	}
+
+	var stdout bytes.Buffer
+	if err := printPlanCompactDFS(&stdout, queryCase{Label: "dfs"}, plan); err != nil {
+		t.Fatalf("printPlanCompactDFS() error = %v", err)
+	}
+	want := "dfs: Serialize Result > Filter Scan > Scan\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("printPlanCompactDFS() = %q, want %q", got, want)
+	}
+}
+
+func TestPrintPlanCompactTreeShowsBranching(t *testing.T) {
+	plan := &spannerpb.QueryPlan{
+		PlanNodes: []*spannerpb.PlanNode{
+			{
+				Index:       0,
+				DisplayName: "Hash Join",
+				ChildLinks: []*spannerpb.PlanNode_ChildLink{
+					{Type: "Build", ChildIndex: 1},
+					{Type: "Probe", ChildIndex: 2},
+				},
+			},
+			{Index: 1, DisplayName: "Scan"},
+			{
+				Index:       2,
+				DisplayName: "Filter Scan",
+				ChildLinks: []*spannerpb.PlanNode_ChildLink{
+					{Type: "Input", ChildIndex: 3},
+					{Type: "Residual Condition", ChildIndex: 4},
+				},
+			},
+			{Index: 3, DisplayName: "Scan"},
+			{Index: 4, DisplayName: "Function"},
+		},
+	}
+
+	var stdout bytes.Buffer
+	if err := printPlanCompactTree(&stdout, queryCase{Label: "join"}, plan, false, false); err != nil {
+		t.Fatalf("printPlanCompactTree() error = %v", err)
+	}
+	want := "join: Hash Join(-[Build]-> Scan, -[Probe]-> Filter Scan -[Input]-> Scan)\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("printPlanCompactTree() = %q, want %q", got, want)
+	}
+}
+
+func TestPrintPlanCompactTreeCanIncludeIndexes(t *testing.T) {
+	plan := &spannerpb.QueryPlan{
+		PlanNodes: []*spannerpb.PlanNode{
+			{
+				Index:       0,
+				DisplayName: "Cross Apply",
+				ChildLinks: []*spannerpb.PlanNode_ChildLink{
+					{Type: "Input", ChildIndex: 1},
+					{Type: "Map", ChildIndex: 2},
+				},
+			},
+			{Index: 1, DisplayName: "Scan"},
+			{Index: 2, DisplayName: "Filter Scan", ChildLinks: []*spannerpb.PlanNode_ChildLink{
+				{Type: "Input", ChildIndex: 3},
+			}},
+			{Index: 3, DisplayName: "Scan"},
+		},
+	}
+
+	var stdout bytes.Buffer
+	if err := printPlanCompactTree(&stdout, queryCase{Label: "apply"}, plan, false, true); err != nil {
+		t.Fatalf("printPlanCompactTree() error = %v", err)
+	}
+	want := "apply: 0:Cross Apply(-[Input]-> 1:Scan, -[Map]-> 2:Filter Scan -[Input]-> 3:Scan)\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("printPlanCompactTree() = %q, want %q", got, want)
+	}
+}
+
+func TestPrintPlanCompactTreeMetadataUsesAnnotations(t *testing.T) {
+	plan := &spannerpb.QueryPlan{
+		PlanNodes: []*spannerpb.PlanNode{
+			{
+				Index:       0,
+				DisplayName: "Scan",
+				Metadata: mustStruct(t, map[string]interface{}{
+					"scan_type":   "SearchIndexScan",
+					"scan_target": "SearchAlbumsTitleIndex",
+				}),
+				ChildLinks: []*spannerpb.PlanNode_ChildLink{
+					{Type: "Search Predicate", ChildIndex: 1},
+				},
+			},
+			{Index: 1, DisplayName: "Search Predicate"},
+		},
+	}
+
+	var stdout bytes.Buffer
+	if err := printPlanCompactTree(&stdout, queryCase{Label: "search"}, plan, true, false); err != nil {
+		t.Fatalf("printPlanCompactTree() error = %v", err)
+	}
+	want := "search: Scan{scan_target=SearchAlbumsTitleIndex, scan_type=SearchIndexScan; Search Predicate}\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("printPlanCompactTree() = %q, want %q", got, want)
+	}
+}
+
+func TestCompactHiddenScalarChildAnnotations(t *testing.T) {
+	plan := &spannerpb.QueryPlan{
+		PlanNodes: []*spannerpb.PlanNode{
+			{
+				Index:       0,
+				DisplayName: "Scan",
+				ChildLinks: []*spannerpb.PlanNode_ChildLink{
+					{Type: "Residual Condition", ChildIndex: 1},
+					{Type: "Timestamp Condition", ChildIndex: 2},
+					{Type: "Residual Condition", ChildIndex: 3},
+					{Type: "Search Predicate", ChildIndex: 4},
+					{Type: "Output", ChildIndex: 5},
+					{Type: "Input", ChildIndex: 6},
+				},
+			},
+			{Index: 1, DisplayName: "Function"},
+			{Index: 2, DisplayName: "Function"},
+			{Index: 3, DisplayName: "Function"},
+			{Index: 4, DisplayName: "Search Predicate"},
+			{Index: 5},
+			{Index: 6, Kind: spannerpb.PlanNode_RELATIONAL, DisplayName: "Scan"},
+		},
+	}
+
+	got := compactHiddenScalarChildAnnotations(plan.GetPlanNodes()[0], compactTreeNodesByIndex(plan))
+	want := []string{
+		"Function[Residual Condition, Timestamp Condition]",
+		"Search Predicate",
+		"Unknown[Output]",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("compactHiddenScalarChildAnnotations() = %#v, want %#v", got, want)
+	}
+}
+
+func TestPrintPlanCompactTreeHidesNonScalarExpressionNodes(t *testing.T) {
+	plan := &spannerpb.QueryPlan{
+		PlanNodes: []*spannerpb.PlanNode{
+			{
+				Index:       0,
+				Kind:        spannerpb.PlanNode_RELATIONAL,
+				DisplayName: "Serialize Result",
+				ChildLinks: []*spannerpb.PlanNode_ChildLink{
+					{ChildIndex: 1},
+				},
+			},
+			{
+				Index:       1,
+				Kind:        spannerpb.PlanNode_RELATIONAL,
+				DisplayName: "Array Unnest",
+				ChildLinks: []*spannerpb.PlanNode_ChildLink{
+					{ChildIndex: 2},
+				},
+			},
+			{
+				Index:       2,
+				Kind:        spannerpb.PlanNode_SCALAR,
+				DisplayName: "Array Constructor",
+			},
+		},
+	}
+
+	var stdout bytes.Buffer
+	if err := printPlanCompactTree(&stdout, queryCase{Label: "array"}, plan, true, false); err != nil {
+		t.Fatalf("printPlanCompactTree() error = %v", err)
+	}
+	want := "array: Serialize Result -> Array Unnest{Array Constructor}\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("printPlanCompactTree() = %q, want %q", got, want)
+	}
+}
+
+func TestPrintPlanCompactTreeSuppressesScalarOnlyDescendants(t *testing.T) {
+	plan := &spannerpb.QueryPlan{
+		PlanNodes: []*spannerpb.PlanNode{
+			{
+				Index:       0,
+				DisplayName: "Scan",
+				Metadata: mustStruct(t, map[string]interface{}{
+					"scan_type": "SearchIndexScan",
+				}),
+				ChildLinks: []*spannerpb.PlanNode_ChildLink{
+					{Type: "Search Predicate", ChildIndex: 1},
+				},
+			},
+			{
+				Index:       1,
+				DisplayName: "Function",
+				ChildLinks: []*spannerpb.PlanNode_ChildLink{
+					{ChildIndex: 2},
+				},
+			},
+			{Index: 2, DisplayName: "Search Predicate"},
+		},
+	}
+
+	var stdout bytes.Buffer
+	if err := printPlanCompactTree(&stdout, queryCase{Label: "search"}, plan, true, false); err != nil {
+		t.Fatalf("printPlanCompactTree() error = %v", err)
+	}
+	want := "search: Scan{scan_type=SearchIndexScan; Function[Search Predicate]}\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("printPlanCompactTree() = %q, want %q", got, want)
+	}
+}
+
+func TestPrintPlanCompactTreeOmitsAnnotatedLinkWhenSameChildIsRendered(t *testing.T) {
+	plan := &spannerpb.QueryPlan{
+		PlanNodes: []*spannerpb.PlanNode{
+			{
+				Index:       0,
+				Kind:        spannerpb.PlanNode_RELATIONAL,
+				DisplayName: "Serialize Result",
+				ChildLinks: []*spannerpb.PlanNode_ChildLink{
+					{ChildIndex: 1},
+					{Type: "Scalar", ChildIndex: 1},
+				},
+			},
+			{
+				Index:       1,
+				Kind:        spannerpb.PlanNode_SCALAR,
+				DisplayName: "Array Subquery",
+				ChildLinks: []*spannerpb.PlanNode_ChildLink{
+					{ChildIndex: 2},
+				},
+			},
+			{
+				Index:       2,
+				Kind:        spannerpb.PlanNode_RELATIONAL,
+				DisplayName: "Scan",
+			},
+		},
+	}
+
+	var stdout bytes.Buffer
+	if err := printPlanCompactTree(&stdout, queryCase{Label: "array"}, plan, true, false); err != nil {
+		t.Fatalf("printPlanCompactTree() error = %v", err)
+	}
+	want := "array: Serialize Result -[Scalar]-> Array Subquery -> Scan\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("printPlanCompactTree() = %q, want %q", got, want)
+	}
+}
+
+func TestPrintPlanJSONIncludesScalarOperators(t *testing.T) {
+	plan := &spannerpb.QueryPlan{
+		PlanNodes: []*spannerpb.PlanNode{
+			{
+				Index:       0,
+				DisplayName: "Function",
+				ShortRepresentation: &spannerpb.PlanNode_ShortRepresentation{
+					Description: "SHA512($SingerInfo)",
+				},
+			},
+		},
+	}
+
+	var stdout bytes.Buffer
+	if err := printPlanJSON(&stdout, queryCase{Label: "function-hint", SQL: "SELECT SHA512(SingerInfo) FROM Singers"}, plan); err != nil {
+		t.Fatalf("printPlanJSON() error = %v", err)
+	}
+	got := stdout.String()
+	for _, want := range []string{
+		`"query_label": "function-hint"`,
+		`"display_name": "Function"`,
+		`"description": "SHA512($SingerInfo)"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("printPlanJSON() missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestPrintPlanYAMLIncludesScalarOperators(t *testing.T) {
+	plan := &spannerpb.QueryPlan{
+		PlanNodes: []*spannerpb.PlanNode{
+			{
+				Index:       0,
+				DisplayName: "Function",
+				ShortRepresentation: &spannerpb.PlanNode_ShortRepresentation{
+					Description: "SHA512($SingerInfo)",
+				},
+			},
+		},
+	}
+
+	var stdout bytes.Buffer
+	if err := printPlanYAML(&stdout, queryCase{Label: "function-hint", SQL: "SELECT SHA512(SingerInfo) FROM Singers"}, plan); err != nil {
+		t.Fatalf("printPlanYAML() error = %v", err)
+	}
+	got := stdout.String()
+	for _, want := range []string{
+		"query_label: function-hint",
+		"display_name: Function",
+		"description: SHA512($SingerInfo)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("printPlanYAML() missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+func mustStruct(t *testing.T, fields map[string]interface{}) *structpb.Struct {
+	t.Helper()
+	st, err := structpb.NewStruct(fields)
+	if err != nil {
+		t.Fatalf("structpb.NewStruct() error = %v", err)
+	}
+	return st
+}
+
+func TestIsDMLStatement(t *testing.T) {
+	tests := []struct {
+		name string
+		sql  string
+		want bool
+	}{
+		{
+			name: "select",
+			sql:  "SELECT * FROM Singers",
+		},
+		{
+			name: "insert",
+			sql:  "INSERT INTO Singers (SingerId) VALUES (1)",
+			want: true,
+		},
+		{
+			name: "update",
+			sql:  "UPDATE Singers SET FirstName = 'A' WHERE SingerId = 1",
+			want: true,
+		},
+		{
+			name: "delete",
+			sql:  "DELETE FROM Singers WHERE SingerId = 1",
+			want: true,
+		},
+		{
+			name: "statement hint before update",
+			sql:  "@{PDML_MAX_PARALLELISM=10} UPDATE Singers SET FirstName = 'A' WHERE SingerId = 1",
+			want: true,
+		},
+		{
+			name: "cte select",
+			sql:  "WITH CTE AS (SELECT 1) SELECT * FROM CTE",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isDMLStatement(tt.sql); got != tt.want {
+				t.Fatalf("isDMLStatement(%q) = %t, want %t", tt.sql, got, tt.want)
+			}
+		})
+	}
+}

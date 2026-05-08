@@ -12,6 +12,7 @@ type GoogleSQLCatalog struct {
 	SpannerCatalog  *Catalog
 	SimpleCatalog   *googlesql.SimpleCatalog
 	simpleCatalogs  map[string]*googlesql.SimpleCatalog
+	tables          map[string]*googlesql.SimpleTable
 	AnalyzerOptions *googlesql.AnalyzerOptions
 	TypeFactory     *googlesql.TypeFactory
 }
@@ -52,6 +53,7 @@ func BuildGoogleSQLCatalogFromSpannerCatalog(schema *Catalog, options ...Analyze
 		SpannerCatalog:  schema,
 		SimpleCatalog:   simpleCatalog,
 		simpleCatalogs:  map[string]*googlesql.SimpleCatalog{"": simpleCatalog},
+		tables:          map[string]*googlesql.SimpleTable{},
 		AnalyzerOptions: opts,
 		TypeFactory:     tf,
 	}
@@ -199,7 +201,7 @@ func (c *GoogleSQLCatalog) addTable(table *Table) error {
 	if err != nil {
 		return err
 	}
-	gsTable, err := googlesql.NewSimpleTable(leafName, 0)
+	gsTable, err := googlesql.NewSimpleTable(leafName, -1)
 	if err != nil {
 		return err
 	}
@@ -220,11 +222,11 @@ func (c *GoogleSQLCatalog) addTable(table *Table) error {
 		if err != nil {
 			return fmt.Errorf("column %s.%s: %w", tableName, col.Name, err)
 		}
-		gsCol, err := googlesql.NewSimpleColumn(tableName, col.Name, gsType, col.Hidden, true)
+		gsCol, err := googlesql.NewSimpleColumn(tableName, col.Name, gsType, col.Hidden, false)
 		if err != nil {
 			return err
 		}
-		if err := gsTable.AddColumn2(gsCol, false); err != nil {
+		if err := gsTable.AddColumn2(gsCol, true); err != nil {
 			return err
 		}
 		if col.PrimaryKey {
@@ -236,15 +238,21 @@ func (c *GoogleSQLCatalog) addTable(table *Table) error {
 			return err
 		}
 	}
-	if err := parentCatalog.AddTable(gsTable); err != nil {
-		return err
-	}
-	for _, synonym := range table.Synonyms {
-		if err := c.SimpleCatalog.AddTable2(synonym, gsTable); err != nil {
+	needsBorrowedTable := len(c.SpannerCatalog.PropertyGraphs) > 0 || len(table.Synonyms) > 0
+	if needsBorrowedTable {
+		if err := parentCatalog.AddTable(gsTable); err != nil {
 			return err
 		}
+		c.tables[tableName] = gsTable
+		c.tables[leafName] = gsTable
+		for _, synonym := range table.Synonyms {
+			if err := c.SimpleCatalog.AddTable2(synonym, gsTable); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
-	return nil
+	return parentCatalog.AddOwnedTable(gsTable)
 }
 
 func simpleCatalogForObjectName(root *googlesql.SimpleCatalog, catalogs map[string]*googlesql.SimpleCatalog, name ObjectName) (*googlesql.SimpleCatalog, string, error) {
@@ -346,15 +354,393 @@ func (c *GoogleSQLCatalog) addPropertyGraphs() error {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		graph, err := googlesql.NewSimplePropertyGraph([]string{name})
+		graph, err := c.newGoogleSQLPropertyGraph(c.SpannerCatalog.PropertyGraphs[name])
 		if err != nil {
 			return err
 		}
-		if err := c.SimpleCatalog.AddPropertyGraph(graph); err != nil {
+		if err := c.SimpleCatalog.AddOwnedPropertyGraph(graph); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (c *GoogleSQLCatalog) newGoogleSQLPropertyGraph(graph *PropertyGraph) (*googlesql.SimplePropertyGraph, error) {
+	if graph == nil {
+		return nil, fmt.Errorf("nil property graph")
+	}
+	namePath := []string{graph.Name}
+	out, err := googlesql.NewSimplePropertyGraph(namePath)
+	if err != nil {
+		return nil, err
+	}
+	state := &propertyGraphBuildState{
+		catalog:              c,
+		graphNamePath:        namePath,
+		graph:                out,
+		propertyDeclarations: map[string]*graphPropertyDeclaration{},
+		labels:               map[string]googlesql.GraphElementLabelNode{},
+		addedDeclarations:    map[string]bool{},
+		addedLabels:          map[string]bool{},
+		nodeTables:           map[string]googlesql.GraphNodeTableNode{},
+	}
+	for _, elem := range graph.NodeTables {
+		node, err := state.addNodeTable(elem)
+		if err != nil {
+			return nil, fmt.Errorf("property graph %s node table %s: %w", graph.Name, elem.Name, err)
+		}
+		state.nodeTables[graphElementName(elem)] = node
+		state.nodeTables[elem.Name] = node
+		if err := state.addGraphDeclarationsAndLabels(); err != nil {
+			return nil, err
+		}
+		if err := out.AddNodeTable(node); err != nil {
+			return nil, err
+		}
+	}
+	for _, elem := range graph.EdgeTables {
+		edge, err := state.addEdgeTable(elem)
+		if err != nil {
+			return nil, fmt.Errorf("property graph %s edge table %s: %w", graph.Name, elem.Name, err)
+		}
+		if err := state.addGraphDeclarationsAndLabels(); err != nil {
+			return nil, err
+		}
+		if err := out.AddEdgeTable(edge); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+type propertyGraphBuildState struct {
+	catalog              *GoogleSQLCatalog
+	graphNamePath        []string
+	graph                *googlesql.SimplePropertyGraph
+	propertyDeclarations map[string]*graphPropertyDeclaration
+	labels               map[string]googlesql.GraphElementLabelNode
+	addedDeclarations    map[string]bool
+	addedLabels          map[string]bool
+	nodeTables           map[string]googlesql.GraphNodeTableNode
+}
+
+type graphPropertyDeclaration struct {
+	typ  googlesql.Googlesql_TypeNode
+	decl googlesql.GraphPropertyDeclarationNode
+}
+
+type graphPropertyBinding struct {
+	name string
+	expr string
+	typ  googlesql.Googlesql_TypeNode
+}
+
+func (s *propertyGraphBuildState) addNodeTable(elem *GraphElement) (*googlesql.SimpleGraphNodeTable, error) {
+	inputTable, table, err := s.inputTable(elem)
+	if err != nil {
+		return nil, err
+	}
+	keyCols, err := tableColumnIndexes(table, graphKeyColumns(table, elem.KeyColumns))
+	if err != nil {
+		return nil, err
+	}
+	labels, definitions, err := s.labelsAndDefinitions(table, elem)
+	if err != nil {
+		return nil, err
+	}
+	dynamicLabel, err := newGraphDynamicLabel(elem.DynamicLabel)
+	if err != nil {
+		return nil, err
+	}
+	dynamicProperties, err := newGraphDynamicProperties(elem.DynamicProperties)
+	if err != nil {
+		return nil, err
+	}
+	return googlesql.NewSimpleGraphNodeTable(
+		graphElementName(elem),
+		s.graphNamePath,
+		inputTable,
+		keyCols,
+		labels,
+		definitions,
+		dynamicLabel,
+		dynamicProperties,
+	)
+}
+
+func (s *propertyGraphBuildState) addEdgeTable(elem *GraphElement) (*googlesql.SimpleGraphEdgeTable, error) {
+	inputTable, table, err := s.inputTable(elem)
+	if err != nil {
+		return nil, err
+	}
+	keyCols, err := tableColumnIndexes(table, graphKeyColumns(table, elem.KeyColumns))
+	if err != nil {
+		return nil, err
+	}
+	labels, definitions, err := s.labelsAndDefinitions(table, elem)
+	if err != nil {
+		return nil, err
+	}
+	source, err := s.nodeTableReference(table, elem.Source)
+	if err != nil {
+		return nil, fmt.Errorf("source: %w", err)
+	}
+	destination, err := s.nodeTableReference(table, elem.Destination)
+	if err != nil {
+		return nil, fmt.Errorf("destination: %w", err)
+	}
+	dynamicLabel, err := newGraphDynamicLabel(elem.DynamicLabel)
+	if err != nil {
+		return nil, err
+	}
+	dynamicProperties, err := newGraphDynamicProperties(elem.DynamicProperties)
+	if err != nil {
+		return nil, err
+	}
+	return googlesql.NewSimpleGraphEdgeTable(
+		graphElementName(elem),
+		s.graphNamePath,
+		inputTable,
+		keyCols,
+		labels,
+		definitions,
+		source,
+		destination,
+		dynamicLabel,
+		dynamicProperties,
+	)
+}
+
+func (s *propertyGraphBuildState) inputTable(elem *GraphElement) (*googlesql.SimpleTable, *Table, error) {
+	table := s.catalog.SpannerCatalog.Tables[elem.Name]
+	if table == nil {
+		return nil, nil, fmt.Errorf("backing table %s not found", elem.Name)
+	}
+	inputTable := s.catalog.tables[elem.Name]
+	if inputTable == nil {
+		return nil, nil, fmt.Errorf("GoogleSQL table %s not found", elem.Name)
+	}
+	return inputTable, table, nil
+}
+
+func (s *propertyGraphBuildState) labelsAndDefinitions(table *Table, elem *GraphElement) ([]googlesql.GraphElementLabelNode, []googlesql.GraphPropertyDefinitionNode, error) {
+	labels := elem.Labels
+	if len(labels) == 0 {
+		labels = []*GraphLabelProperties{{Default: true, Properties: elem.Properties}}
+	}
+	outLabels := make([]googlesql.GraphElementLabelNode, 0, len(labels))
+	definitions := []googlesql.GraphPropertyDefinitionNode{}
+	defined := map[string]bool{}
+	for _, label := range labels {
+		bindings, err := s.propertyBindings(table, label.Properties)
+		if err != nil {
+			return nil, nil, err
+		}
+		propertyDecls := make([]googlesql.GraphPropertyDeclarationNode, 0, len(bindings))
+		for _, binding := range bindings {
+			decl, err := s.propertyDeclaration(binding.name, binding.typ)
+			if err != nil {
+				return nil, nil, err
+			}
+			propertyDecls = append(propertyDecls, decl)
+			if !defined[strings.ToLower(binding.name)] {
+				definition, err := googlesql.NewSimpleGraphPropertyDefinition(decl, binding.expr)
+				if err != nil {
+					return nil, nil, err
+				}
+				definitions = append(definitions, definition)
+				defined[strings.ToLower(binding.name)] = true
+			}
+		}
+		labelName := label.Name
+		if label.Default || labelName == "" {
+			labelName = graphElementName(elem)
+		}
+		gsLabel, err := s.label(labelName, propertyDecls)
+		if err != nil {
+			return nil, nil, err
+		}
+		outLabels = append(outLabels, gsLabel)
+	}
+	return outLabels, definitions, nil
+}
+
+func (s *propertyGraphBuildState) propertyBindings(table *Table, props *GraphProperties) ([]graphPropertyBinding, error) {
+	if props == nil || props.NoProperties {
+		return nil, nil
+	}
+	if props.AllColumns {
+		except := stringSetFromSlice(props.ExceptColumns)
+		bindings := make([]graphPropertyBinding, 0, len(table.Columns))
+		for _, col := range table.Columns {
+			if col.Hidden || except[strings.ToLower(col.Name)] {
+				continue
+			}
+			typ, err := s.catalog.TypeSpecToGoogleSQLType(col.Type)
+			if err != nil {
+				return nil, fmt.Errorf("property %s: %w", col.Name, err)
+			}
+			bindings = append(bindings, graphPropertyBinding{name: col.Name, expr: col.Name, typ: typ})
+		}
+		return bindings, nil
+	}
+	if len(props.DerivedProperties) == 0 {
+		return nil, nil
+	}
+	bindings := make([]graphPropertyBinding, 0, len(props.DerivedProperties))
+	for _, prop := range props.DerivedProperties {
+		col, _ := table.Column(prop.SQL)
+		if col == nil {
+			return nil, fmt.Errorf("derived property %s uses expression %q; only direct column-derived properties are currently supported", prop.Name, prop.SQL)
+		}
+		typ, err := s.catalog.TypeSpecToGoogleSQLType(col.Type)
+		if err != nil {
+			return nil, fmt.Errorf("property %s: %w", prop.Name, err)
+		}
+		bindings = append(bindings, graphPropertyBinding{name: prop.Name, expr: prop.SQL, typ: typ})
+	}
+	return bindings, nil
+}
+
+func (s *propertyGraphBuildState) propertyDeclaration(name string, typ googlesql.Googlesql_TypeNode) (googlesql.GraphPropertyDeclarationNode, error) {
+	key := strings.ToLower(name)
+	if existing := s.propertyDeclarations[key]; existing != nil {
+		return existing.decl, nil
+	}
+	decl, err := googlesql.NewSimpleGraphPropertyDeclaration(name, s.graphNamePath, typ)
+	if err != nil {
+		return nil, err
+	}
+	s.propertyDeclarations[key] = &graphPropertyDeclaration{typ: typ, decl: decl}
+	return decl, nil
+}
+
+func (s *propertyGraphBuildState) label(name string, propertyDeclarations []googlesql.GraphPropertyDeclarationNode) (googlesql.GraphElementLabelNode, error) {
+	key := strings.ToLower(name)
+	if label := s.labels[key]; label != nil {
+		return label, nil
+	}
+	label, err := googlesql.NewSimpleGraphElementLabel(name, s.graphNamePath, propertyDeclarations)
+	if err != nil {
+		return nil, err
+	}
+	s.labels[key] = label
+	return label, nil
+}
+
+func (s *propertyGraphBuildState) addGraphDeclarationsAndLabels() error {
+	declarationKeys := make([]string, 0, len(s.propertyDeclarations))
+	for key := range s.propertyDeclarations {
+		declarationKeys = append(declarationKeys, key)
+	}
+	sort.Strings(declarationKeys)
+	for _, key := range declarationKeys {
+		if s.addedDeclarations[key] {
+			continue
+		}
+		if err := s.graph.AddPropertyDeclaration(s.propertyDeclarations[key].decl); err != nil {
+			return err
+		}
+		s.addedDeclarations[key] = true
+	}
+
+	labelKeys := make([]string, 0, len(s.labels))
+	for key := range s.labels {
+		labelKeys = append(labelKeys, key)
+	}
+	sort.Strings(labelKeys)
+	for _, key := range labelKeys {
+		if s.addedLabels[key] {
+			continue
+		}
+		if err := s.graph.AddLabel(s.labels[key]); err != nil {
+			return err
+		}
+		s.addedLabels[key] = true
+	}
+	return nil
+}
+
+func (s *propertyGraphBuildState) nodeTableReference(edgeTable *Table, endpoint *GraphEndpoint) (googlesql.GraphNodeTableReferenceNode, error) {
+	if endpoint == nil {
+		return nil, nil
+	}
+	node := s.nodeTables[endpoint.ElementReference]
+	if node == nil {
+		return nil, fmt.Errorf("node table %s not found", endpoint.ElementReference)
+	}
+	nodeTable := s.catalog.SpannerCatalog.Tables[endpoint.ElementReference]
+	if nodeTable == nil {
+		return nil, fmt.Errorf("backing node table %s not found", endpoint.ElementReference)
+	}
+	edgeCols, err := tableColumnIndexes(edgeTable, endpoint.KeyColumns)
+	if err != nil {
+		return nil, err
+	}
+	refCols := endpoint.ReferenceColumns
+	if len(refCols) == 0 {
+		refCols = graphKeyColumns(nodeTable, nil)
+	}
+	nodeCols, err := tableColumnIndexes(nodeTable, refCols)
+	if err != nil {
+		return nil, err
+	}
+	return googlesql.NewSimpleGraphNodeTableReference(node, edgeCols, nodeCols)
+}
+
+func graphElementName(elem *GraphElement) string {
+	if elem != nil && elem.Alias != "" {
+		return elem.Alias
+	}
+	if elem == nil {
+		return ""
+	}
+	return elem.Name
+}
+
+func graphKeyColumns(table *Table, explicit []string) []string {
+	if len(explicit) > 0 {
+		return explicit
+	}
+	out := make([]string, 0, len(table.PrimaryKey))
+	for _, key := range table.PrimaryKey {
+		out = append(out, key.Name)
+	}
+	return out
+}
+
+func tableColumnIndexes(table *Table, names []string) ([]int32, error) {
+	indexes := make([]int32, 0, len(names))
+	for _, name := range names {
+		_, index := table.Column(name)
+		if index < 0 {
+			return nil, fmt.Errorf("column %s not found in table %s", name, table.Name)
+		}
+		indexes = append(indexes, int32(index))
+	}
+	return indexes, nil
+}
+
+func newGraphDynamicLabel(column string) (googlesql.GraphDynamicLabelNode, error) {
+	if column == "" {
+		return nil, nil
+	}
+	return googlesql.NewSimpleGraphDynamicLabel(column)
+}
+
+func newGraphDynamicProperties(column string) (googlesql.GraphDynamicPropertiesNode, error) {
+	if column == "" {
+		return nil, nil
+	}
+	return googlesql.NewSimpleGraphDynamicProperties(column)
+}
+
+func stringSetFromSlice(values []string) map[string]bool {
+	out := make(map[string]bool, len(values))
+	for _, value := range values {
+		out[strings.ToLower(value)] = true
+	}
+	return out
 }
 
 func (c *GoogleSQLCatalog) addSequences() error {

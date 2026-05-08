@@ -8,6 +8,7 @@ import (
 
 	"cloud.google.com/go/spanner/apiv1/spannerpb"
 	spanalyzer "github.com/apstndb/go-googlesql-spanner-poc"
+	"github.com/apstndb/go-googlesql-spanner-poc/internal/querygen"
 	"github.com/goccy/go-yaml"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -18,7 +19,7 @@ func TestRunModeSpannerTypeExpressionReturnsType(t *testing.T) {
 		t.Fatalf("NewAnalyzerFromDDL() error = %v", err)
 	}
 
-	out, err := runMode(analyzer, "spanner_type", "expression", "1", "json")
+	out, err := runMode(analyzer, "spanner_type", "expression", "1", "json", defaultGoStructOptionsForTest())
 	if err != nil {
 		t.Fatalf("runMode() error = %v", err)
 	}
@@ -40,7 +41,7 @@ func TestRunModesDefaultReturnsSpannerType(t *testing.T) {
 		t.Fatalf("NewAnalyzerFromDDL() error = %v", err)
 	}
 
-	out, err := runModes(analyzer, nil, "expression", "1", defaultOutputFormat)
+	out, err := runModes(analyzer, nil, "expression", "1", defaultOutputFormat, defaultGoStructOptionsForTest())
 	if err != nil {
 		t.Fatalf("runModes() error = %v", err)
 	}
@@ -66,7 +67,7 @@ func TestRunBigQueryModesDefaultReturnsBigQueryType(t *testing.T) {
 		t.Fatalf("NewBigQueryAnalyzerFromDDL() error = %v", err)
 	}
 
-	out, err := runBigQueryModes(analyzer, nil, "query", "SELECT 1 AS n", defaultOutputFormat)
+	out, err := runBigQueryModes(analyzer, nil, "query", "SELECT 1 AS n", defaultOutputFormat, defaultGoStructOptionsForTest())
 	if err != nil {
 		t.Fatalf("runBigQueryModes() error = %v", err)
 	}
@@ -84,7 +85,7 @@ func TestRunBigQueryModeJSON(t *testing.T) {
 		t.Fatalf("NewBigQueryAnalyzerFromDDL() error = %v", err)
 	}
 
-	out, err := runBigQueryMode(analyzer, "bigquery_type", "expression", "IF(TRUE, 1, 2)", "json")
+	out, err := runBigQueryMode(analyzer, "bigquery_type", "expression", "IF(TRUE, 1, 2)", "json", defaultGoStructOptionsForTest())
 	if err != nil {
 		t.Fatalf("runBigQueryMode() error = %v", err)
 	}
@@ -99,7 +100,7 @@ func TestRunModeSpannerTypeYAML(t *testing.T) {
 		t.Fatalf("NewAnalyzerFromDDL() error = %v", err)
 	}
 
-	out, err := runMode(analyzer, "spanner_type", "expression", "1", "yaml")
+	out, err := runMode(analyzer, "spanner_type", "expression", "1", "yaml", defaultGoStructOptionsForTest())
 	if err != nil {
 		t.Fatalf("runMode() error = %v", err)
 	}
@@ -117,7 +118,7 @@ func TestRunModeAnalyzeReturnsResolvedAST(t *testing.T) {
 		t.Fatalf("NewAnalyzerFromDDL() error = %v", err)
 	}
 
-	out, err := runMode(analyzer, "analyze", "query", "SELECT 1 AS n", "json")
+	out, err := runMode(analyzer, "analyze", "query", "SELECT 1 AS n", "json", defaultGoStructOptionsForTest())
 	if err != nil {
 		t.Fatalf("runMode() error = %v", err)
 	}
@@ -126,6 +127,52 @@ func TestRunModeAnalyzeReturnsResolvedAST(t *testing.T) {
 	}
 	if !strings.Contains(out, "QueryStmt") {
 		t.Fatalf("runMode() output = %q, want resolved AST debug string containing QueryStmt", out)
+	}
+}
+
+func TestRunModeGoStruct(t *testing.T) {
+	analyzer, err := spanalyzer.NewAnalyzerFromDDL("schema.sql", `
+CREATE TABLE Singers (
+  SingerId INT64 NOT NULL,
+  FirstName STRING(MAX)
+) PRIMARY KEY (SingerId);`)
+	if err != nil {
+		t.Fatalf("NewAnalyzerFromDDL() error = %v", err)
+	}
+
+	out, err := runMode(analyzer, "go_struct", "query", "SELECT SingerId, FirstName FROM Singers", "yaml", defaultGoStructOptionsForTest())
+	if err != nil {
+		t.Fatalf("runMode() error = %v", err)
+	}
+	if !strings.Contains(out, "type QueryRow struct") ||
+		!strings.Contains(out, "SingerId  NullValue[int64]") ||
+		!strings.Contains(out, `spanner:"SingerId"`) {
+		t.Fatalf("runMode() output does not look like Go struct code:\n%s", out)
+	}
+}
+
+func TestRunBigQueryModeGoStruct(t *testing.T) {
+	analyzer, err := spanalyzer.NewBigQueryAnalyzerFromDDL("schema.sql", "")
+	if err != nil {
+		t.Fatalf("NewBigQueryAnalyzerFromDDL() error = %v", err)
+	}
+
+	out, err := runBigQueryMode(analyzer, "go_struct", "query", "SELECT 1 AS n, b'abc' AS payload", "yaml", defaultGoStructOptionsForTest())
+	if err != nil {
+		t.Fatalf("runBigQueryMode() error = %v", err)
+	}
+	if !strings.Contains(out, "type QueryRow struct") ||
+		!strings.Contains(out, "N       NullValue[int64]") ||
+		!strings.Contains(out, "Payload NullValue[[]byte]") {
+		t.Fatalf("runBigQueryMode() output does not look like Go struct code:\n%s", out)
+	}
+}
+
+func defaultGoStructOptionsForTest() querygen.GoStructOptions {
+	return querygen.GoStructOptions{
+		PackageName: "main",
+		StructName:  "QueryRow",
+		Target:      querygen.GoStructTargetBoth,
 	}
 }
 

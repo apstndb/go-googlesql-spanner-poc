@@ -493,6 +493,31 @@ REMOTE OPTIONS (endpoint = '//aiplatform.googleapis.com/projects/p/locations/us-
 	}
 }
 
+func TestAnalyzerRowTypeForPropertyGraph(t *testing.T) {
+	const ddl = `
+CREATE TABLE Person (
+  id INT64 NOT NULL,
+) PRIMARY KEY (id);
+
+CREATE PROPERTY GRAPH g
+  NODE TABLES (
+    Person LABEL Person PROPERTIES ARE ALL COLUMNS
+  );
+`
+	analyzer, err := NewAnalyzerFromDDL("schema.sql", ddl)
+	if err != nil {
+		t.Fatalf("NewAnalyzerFromDDL() error = %v", err)
+	}
+	rowType, err := analyzer.RowTypeForStatement("SELECT * FROM GRAPH_TABLE(g MATCH (p:Person) RETURN p.id AS id)")
+	if err != nil {
+		t.Fatalf("RowTypeForStatement() error = %v", err)
+	}
+	if got, want := len(rowType.Fields), 1; got != want {
+		t.Fatalf("len(rowType.Fields) = %d, want %d", got, want)
+	}
+	assertField(t, rowType.Fields[0], "id", spannerpb.TypeCode_INT64)
+}
+
 func TestAnalyzerRowTypeForNestedView(t *testing.T) {
 	const ddl = `
 CREATE TABLE Singers (

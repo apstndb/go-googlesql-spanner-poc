@@ -12,6 +12,7 @@ import (
 
 type Catalog struct {
 	Tables           map[string]*Table
+	Indexes          map[string]*Index
 	Views            map[string]*View
 	ViewOrder        []string
 	PropertyGraphs   map[string]*PropertyGraph
@@ -34,6 +35,14 @@ type Table struct {
 	Columns    []*Column
 	PrimaryKey []*KeyPart
 	Synonyms   []string
+}
+
+type Index struct {
+	Name          ObjectName
+	TableName     ObjectName
+	Keys          []*KeyPart
+	StoredColumns []string
+	NullFiltered  bool
 }
 
 func (t *Table) Column(name string) (*Column, int) {
@@ -79,6 +88,7 @@ type GraphElement struct {
 	Source            *GraphEndpoint
 	Destination       *GraphEndpoint
 	Labels            []*GraphLabelProperties
+	Properties        *GraphProperties
 	PropertiesSQL     string
 	DynamicLabel      string
 	DynamicProperties string
@@ -93,17 +103,32 @@ type GraphEndpoint struct {
 type GraphLabelProperties struct {
 	Name          string
 	Default       bool
+	Properties    *GraphProperties
 	PropertiesSQL string
 }
 
+type GraphProperties struct {
+	NoProperties      bool
+	AllColumns        bool
+	ExceptColumns     []string
+	DerivedProperties []*GraphDerivedProperty
+}
+
+type GraphDerivedProperty struct {
+	Name string
+	SQL  string
+}
+
 type Column struct {
-	Name         string
-	Type         *TypeSpec
-	NotNull      bool
-	Hidden       bool
-	PrimaryKey   bool
-	DefaultSQL   string
-	GeneratedSQL string
+	Name                 string
+	Type                 *TypeSpec
+	NotNull              bool
+	Hidden               bool
+	PrimaryKey           bool
+	DefaultSQL           string
+	GeneratedSQL         string
+	OnUpdateSQL          string
+	AllowCommitTimestamp bool
 }
 
 type KeyPart struct {
@@ -142,6 +167,7 @@ func BuildSchemaCatalog(path, ddlSQL string) (*Catalog, error) {
 	}
 	catalog := &Catalog{
 		Tables:         map[string]*Table{},
+		Indexes:        map[string]*Index{},
 		Views:          map[string]*View{},
 		PropertyGraphs: map[string]*PropertyGraph{},
 		Sequences:      map[string]*Sequence{},
@@ -203,9 +229,16 @@ func (c *Catalog) ApplyDDL(ddl ast.DDL) error {
 	case *ast.DropProtoBundle:
 		clear(c.ProtoTypes)
 		return nil
-	case *ast.CreateIndex, *ast.DropIndex, *ast.CreateVectorIndex, *ast.DropVectorIndex:
-		// Indexes do not affect the logical row type of query results, so the
-		// analyzer catalog can ignore them until index metadata is modeled.
+	case *ast.CreateIndex:
+		return c.applyCreateIndex(ddl)
+	case *ast.AlterIndex:
+		return c.applyAlterIndex(ddl)
+	case *ast.DropIndex:
+		delete(c.Indexes, objectNameFromPath(ddl.Name).String())
+		return nil
+	case *ast.CreateVectorIndex, *ast.DropVectorIndex:
+		// Vector indexes do not affect logical query result row types. Regular
+		// index metadata is retained for query code generation.
 		return nil
 	case *ast.CreateSchema, *ast.DropSchema:
 		// Schemas only scope object names; individual objects carry their full
@@ -215,6 +248,51 @@ func (c *Catalog) ApplyDDL(ddl ast.DDL) error {
 		return c.applyRenameTable(ddl)
 	default:
 		return fmt.Errorf("unsupported DDL %T", ddl)
+	}
+}
+
+func (c *Catalog) applyCreateIndex(ddl *ast.CreateIndex) error {
+	name := objectNameFromPath(ddl.Name)
+	key := name.String()
+	if _, ok := c.Indexes[key]; ok {
+		if ddl.IfNotExists {
+			return nil
+		}
+		return fmt.Errorf("index %s already exists", name)
+	}
+	index := &Index{
+		Name:         name,
+		TableName:    objectNameFromPath(ddl.TableName),
+		Keys:         make([]*KeyPart, 0, len(ddl.Keys)),
+		NullFiltered: ddl.NullFiltered,
+	}
+	for _, key := range ddl.Keys {
+		index.Keys = append(index.Keys, keyPartFromIndexKey(key))
+	}
+	if ddl.Storing != nil {
+		index.StoredColumns = identNames(ddl.Storing.Columns)
+	}
+	c.Indexes[key] = index
+	return nil
+}
+
+func (c *Catalog) applyAlterIndex(ddl *ast.AlterIndex) error {
+	name := objectNameFromPath(ddl.Name)
+	index, ok := c.Indexes[name.String()]
+	if !ok {
+		return fmt.Errorf("index %s does not exist", name)
+	}
+	switch alt := ddl.IndexAlteration.(type) {
+	case *ast.AddStoredColumn:
+		if !containsName(index.StoredColumns, alt.Name.Name) {
+			index.StoredColumns = append(index.StoredColumns, alt.Name.Name)
+		}
+		return nil
+	case *ast.DropStoredColumn:
+		index.StoredColumns = filterNames(index.StoredColumns, alt.Name.Name)
+		return nil
+	default:
+		return fmt.Errorf("unsupported ALTER INDEX %s alteration %T", name, alt)
 	}
 }
 
@@ -487,6 +565,9 @@ func columnFromDef(def *ast.ColumnDef) (*Column, error) {
 	case nil:
 	case *ast.ColumnDefaultExpr:
 		col.DefaultSQL = sem.Expr.SQL()
+		if sem.OnUpdate != nil {
+			col.OnUpdateSQL = sem.OnUpdate.Expr.SQL()
+		}
 	case *ast.GeneratedColumnExpr:
 		col.GeneratedSQL = sem.Expr.SQL()
 	case *ast.IdentityColumn:
@@ -494,6 +575,7 @@ func columnFromDef(def *ast.ColumnDef) (*Column, error) {
 	default:
 		return nil, fmt.Errorf("unsupported column default semantics %T", sem)
 	}
+	applyColumnOptions(col, def.Options)
 	return col, nil
 }
 
@@ -508,16 +590,42 @@ func applyColumnAlteration(col *Column, alt ast.ColumnAlteration) error {
 		col.NotNull = alt.NotNull
 		if alt.DefaultExpr != nil {
 			col.DefaultSQL = alt.DefaultExpr.Expr.SQL()
+			if alt.DefaultExpr.OnUpdate != nil {
+				col.OnUpdateSQL = alt.DefaultExpr.OnUpdate.Expr.SQL()
+			}
 		}
 		return nil
 	case *ast.AlterColumnSetDefault:
 		col.DefaultSQL = alt.DefaultExpr.Expr.SQL()
+		if alt.DefaultExpr.OnUpdate != nil {
+			col.OnUpdateSQL = alt.DefaultExpr.OnUpdate.Expr.SQL()
+		}
 		return nil
 	case *ast.AlterColumnDropDefault:
 		col.DefaultSQL = ""
 		return nil
+	case *ast.AlterColumnSetOnUpdate:
+		col.OnUpdateSQL = alt.OnUpdate.Expr.SQL()
+		return nil
+	case *ast.AlterColumnDropOnUpdate:
+		col.OnUpdateSQL = ""
+		return nil
+	case *ast.AlterColumnSetOptions:
+		applyColumnOptions(col, alt.Options)
+		return nil
 	default:
 		return fmt.Errorf("unsupported ALTER COLUMN alteration %T", alt)
+	}
+}
+
+func applyColumnOptions(col *Column, options *ast.Options) {
+	if options == nil {
+		return
+	}
+	for _, opt := range options.Records {
+		if strings.EqualFold(opt.Name.Name, "allow_commit_timestamp") {
+			col.AllowCommitTimestamp = strings.EqualFold(opt.Value.SQL(), "TRUE")
+		}
 	}
 }
 
@@ -619,6 +727,33 @@ func filterPrimaryKey(keys []*KeyPart, name string) []*KeyPart {
 		}
 	}
 	return out
+}
+
+func filterNames(names []string, name string) []string {
+	out := names[:0]
+	for _, value := range names {
+		if !strings.EqualFold(value, name) {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func containsName(names []string, name string) bool {
+	for _, value := range names {
+		if strings.EqualFold(value, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func identNames(idents []*ast.Ident) []string {
+	names := make([]string, 0, len(idents))
+	for _, ident := range idents {
+		names = append(names, ident.Name)
+	}
+	return names
 }
 
 func keyPartFromIndexKey(key *ast.IndexKey) *KeyPart {
